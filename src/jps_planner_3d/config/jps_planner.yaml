@@ -1,0 +1,26 @@
+jps_planner_node:
+  ros__parameters:
+    # ========== 坐标系 ==========
+    frame_id: "map"
+
+    # ========== A* / JPS 规划参数 ==========
+    # 启发式权重 (1.0=最优路径, >1=加速搜索但可能非最优)
+    heuristic_weight: 1.0
+    # 单步最大 Z 轴变化 (米)，用于台阶/斜坡约束
+    max_z_change: 0.5
+    # Z 轴变化超过阈值后的惩罚权重
+    z_penalty_weight: 3.0
+    # 贴墙惩罚权重，基于距离场计算，0 表示禁用
+    potential_weight: 100.0
+
+    # ========== VoxelMap / Surface 参数 ==========
+    # BFS 连通性高度阈值 (米)，控制可跨越的台阶高度
+    connectivity_height_threshold: 0.6
+    # Surface 上方需要的空气高度 (米)，确保通行空间
+    surface_clearance_height: 0.8
+    # 距离场最大距离 (网格单位，最大255)，用于贴墙惩罚范围
+    distance_field_max_distance: 5
+
+    # ========== 服务名称 (可选覆盖) ==========
+    # set_map_service: "set_voxel_map"
+    # plan_service: "plan_path"
