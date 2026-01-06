@@ -26,7 +26,7 @@ ros2 launch jps_planner_3d jps_planner.launch.py config:=/path/to/your/config.ya
 调用 `/set_voxel_map` 服务设置占据体素地图：
 
 ```bash
-ros2 service call /set_voxel_map jps_planner_3d/srv/SetVoxelMap "{
+ros2 service call /set_voxel_map nav_interfaces/srv/SetVoxelMap "{
   resolution: 0.2,
   free_space_margin: 2.0,
   occupied: [
@@ -49,7 +49,7 @@ ros2 service call /set_voxel_map jps_planner_3d/srv/SetVoxelMap "{
 调用 `/plan_path` 服务进行路径规划：
 
 ```bash
-ros2 service call /plan_path jps_planner_3d/srv/PlanPath "{
+ros2 service call /plan_path nav_interfaces/srv/PlanPath "{
   start: {position: {x: 0.0, y: 0.0, z: 0.5}},
   goal: {position: {x: 5.0, y: 3.0, z: 0.5}},
   snap_to_surface: true

@@ -9,18 +9,9 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(nav_interfaces REQUIRED)
+find_package(rosidl_cmake REQUIRED)
 find_package(rosidl_default_runtime REQUIRED)
-find_package(rosidl_default_generators REQUIRED)
-
-set(srv_files
-  srv/SetVoxelMap.srv
-  srv/PlanPath.srv
-)
-
-rosidl_generate_interfaces(${PROJECT_NAME}
-  ${srv_files}
-  DEPENDENCIES geometry_msgs nav_msgs std_msgs builtin_interfaces
-)
 
 include_directories(
   include
@@ -48,15 +39,23 @@ ament_target_dependencies(jps_planner_node
   rclcpp
   geometry_msgs
   nav_msgs
+  nav_interfaces
   rosidl_default_runtime
 )
 
-rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
-
 target_link_libraries(jps_planner_node
   ${PROJECT_NAME}_core
-  ${cpp_typesupport_target}
 )
+
+# nav_interfaces exports its generated typesupport targets under
+# nav_interfaces_TARGETS__rosidl_typesupport_cpp (e.g. nav_interfaces::nav_interfaces__rosidl_typesupport_cpp)
+if(nav_interfaces_TARGETS__rosidl_typesupport_cpp)
+  target_link_libraries(jps_planner_node
+    ${nav_interfaces_TARGETS__rosidl_typesupport_cpp}
+  )
+else()
+  message(FATAL_ERROR "nav_interfaces does not export C++ typesupport targets; cannot link service typesupport")
+endif()
 
 target_include_directories(jps_planner_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

@@ -11,11 +11,13 @@
 
 #include "jps_planner_3d/jps_3d.hpp"
 #include "jps_planner_3d/voxel_map.hpp"
-#include "jps_planner_3d/srv/set_voxel_map.hpp"
-#include "jps_planner_3d/srv/plan_path.hpp"
+#include "nav_interfaces/srv/set_voxel_map.hpp"
+#include "nav_interfaces/srv/plan_path.hpp"
 
 namespace jps_planner_3d
 {
+
+namespace srv = nav_interfaces::srv;
 
 class JpsPlannerNode : public rclcpp::Node
 {
@@ -71,6 +73,9 @@ private:
     const std::shared_ptr<srv::SetVoxelMap::Request> request,
     std::shared_ptr<srv::SetVoxelMap::Response> response)
   {
+    RCLCPP_INFO(get_logger(), "set_voxel_map: occupied=%zu, res=%.3f, margin=%.3f",
+      request->occupied.size(), request->resolution, request->free_space_margin);
+
     if (request->resolution <= 0.0 || request->free_space_margin < 0.0) {
       response->success = false;
       response->message = "Resolution must be > 0 and free_space_margin must be >= 0";
@@ -101,7 +106,11 @@ private:
 
     response->success = true;
     response->message = "Voxel map updated";
-    RCLCPP_INFO(get_logger(), "Voxel map updated: %zu occupied voxels", request->occupied.size());
+    auto [nx, ny, nz] = voxel_map_->getGridSize();
+    const auto surface_count = voxel_map_->getValidSurfaceVoxels().size();
+    RCLCPP_INFO(get_logger(),
+      "Voxel map ready: occupied=%zu, surface=%zu, grid=%d x %d x %d, res=%.3f",
+      request->occupied.size(), surface_count, nx, ny, nz, request->resolution);
   }
 
   void handlePlanPath(
@@ -109,6 +118,12 @@ private:
     const std::shared_ptr<srv::PlanPath::Request> request,
     std::shared_ptr<srv::PlanPath::Response> response)
   {
+    RCLCPP_INFO(get_logger(),
+      "plan_path: start=(%.3f, %.3f, %.3f) goal=(%.3f, %.3f, %.3f) snap=%s",
+      request->start.position.x, request->start.position.y, request->start.position.z,
+      request->goal.position.x, request->goal.position.y, request->goal.position.z,
+      request->snap_to_surface ? "true" : "false");
+
     std::shared_ptr<JPS3D> planner_copy;
     std::shared_ptr<VoxelMap> map_copy;
     {
@@ -147,6 +162,7 @@ private:
       } else {
         response->message = "Planner returned empty path";
       }
+      RCLCPP_WARN(get_logger(), "plan_path failed: %s", response->message.c_str());
       return;
     }
 
@@ -168,6 +184,8 @@ private:
     response->success = true;
     response->message = "Path planned";
     response->path = std::move(ros_path);
+
+    RCLCPP_INFO(get_logger(), "plan_path success: poses=%zu", path.size());
   }
 
   std::shared_ptr<VoxelMap> voxel_map_;
