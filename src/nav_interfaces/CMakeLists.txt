@@ -9,6 +9,7 @@ find_package(nav_msgs REQUIRED)
 set(srv_files
   srv/SetVoxelMap.srv
   srv/PlanPath.srv
+  srv/GetDistanceField.srv
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}

@@ -1,0 +1,8 @@
+# Request: empty (get current distance field from loaded voxel map)
+---
+# Response
+bool success
+string message
+float64 resolution
+geometry_msgs/Point[] surface_points  # Surface voxel positions
+uint8[] distances  # Corresponding distance values (0-255)

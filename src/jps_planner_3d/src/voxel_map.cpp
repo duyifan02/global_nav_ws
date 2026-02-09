@@ -460,11 +460,15 @@ void VoxelMap::computeDistanceFieldOnSurface()
     distance_map_.clear();
     distance_map_.reserve(valid_surface_voxels_.size());
     
-    // Step 1: 初始化 - 检查每个surface点的邻域是否有障碍物
-    // 如果邻域有障碍物，距离=1；否则距离=INF
     // 计算Z方向搜索范围（与BFS连通性保持一致）
     int z_search = static_cast<int>(std::ceil(connectivity_height_threshold_ / resolution_));
-
+    
+    auto [nx, ny, nz] = grid_size_;
+    
+    // ========== Step 1: 初始化距离场 ==========
+    // 检查每个surface点的邻域是否有障碍物
+    // 如果邻域有障碍物，距离=1；否则距离=INF
+    
     for (const auto& voxel : valid_surface_voxels_) {
         auto [sx, sy, sz] = voxel;
         if (!isValidIdx(sx, sy, sz)) continue;
@@ -502,92 +506,105 @@ void VoxelMap::computeDistanceFieldOnSurface()
             }
         }
 
-        // 下方肯定是地面（Surface定义），不算墙壁
-        // 只存储surface点的距离场，使用8 bits（值范围0-255）
+        // 初始化距离值
         distance_map_[idx] = near_obstacle ? 1 : INF;
     }
     
-    // Step 2: 多遍DP扫描直到收敛
-    // 只遍历surface点，使用distance_map_存储
-    bool changed = true;
-    int iterations = 0;
-    const int MAX_ITERATIONS = MAX_DISTANCE + 2;  // 最多需要MAX_DISTANCE次迭代
-
-    while (changed && iterations < MAX_ITERATIONS) {
-        changed = false;
-        iterations++;
-
-        // 遍历所有surface点
-        for (const auto& voxel : valid_surface_voxels_) {
-            auto [sx, sy, sz] = voxel;
-            if (!isValidIdx(sx, sy, sz)) continue;
-
-            size_t idx = index3DTo1D(sx, sy, sz);
-
-            // 获取当前距离（如果不存在，使用INF）
-            auto it = distance_map_.find(idx);
-            if (it == distance_map_.end()) {
-                continue;  // 不应该发生
-            }
-
-            uint8_t current_dist = it->second;
-            if (current_dist == 0) continue;  // 跳过障碍物（不应该存在）
-
-            // 检查8邻域的surface点（使用直接索引）
-            for (int dx = -1; dx <= 1; ++dx) {
-                for (int dy = -1; dy <= 1; ++dy) {
-                    if (dx == 0 && dy == 0) continue;
-
-                    int nx_coord = sx + dx;
-                    int ny_coord = sy + dy;
-
-                    // 在Z方向搜索可连通的surface点（与BFS建图和初始化保持一致）
-                    // 使用connectivity_height_threshold_确保距离场传播范围与可达性定义一致
-                    for (int dz = -z_search; dz <= z_search; ++dz) {
-                        int nz_coord = sz + dz;
-                        
-                        if (!isValidIdx(nx_coord, ny_coord, nz_coord)) continue;
-                        
-                        size_t neighbor_idx = index3DTo1D(nx_coord, ny_coord, nz_coord);
-                        
-                        // 检查是否是有效Surface点
-                        if (neighbor_idx >= surface_array_.size() || !surface_array_[neighbor_idx]) {
-                            continue;
-                        }
-                        
-                        // 从distance_map_中获取邻居距离
-                        auto neighbor_it = distance_map_.find(neighbor_idx);
-                        if (neighbor_it == distance_map_.end()) {
-                            continue;  // 不应该发生
-                        }
-                        
-                        uint8_t neighbor_dist = neighbor_it->second;
-                        
-                        // 传播距离：邻居距离+1（只有当邻居距离不是INF时才传播）
-                        if (neighbor_dist < INF) {
-                            uint8_t new_dist = static_cast<uint8_t>(neighbor_dist + 1);
-                            // 限制在最大距离范围内
-                            if (new_dist > MAX_DISTANCE_U8) {
-                                new_dist = MAX_DISTANCE_U8;
-                            }
-                            if (new_dist < current_dist) {
-                                current_dist = new_dist;
-                                changed = true;
-                            }
-                        }
-                    }
-                }
-            }
+    // ========== Step 2: 两遍DP扫描（优化版本）==========
+    // 使用 Chamfer Distance Transform 的思想，但适配 Surface 约束和 Z 轴连通性
+    
+    // 辅助函数：获取指定坐标的距离值
+    auto get_distance = [this](int x, int y, int z) -> uint8_t {
+        if (!isValidIdx(x, y, z)) return INF;
+        size_t idx = index3DTo1D(x, y, z);
+        if (idx >= surface_array_.size() || !surface_array_[idx]) return INF;
+        
+        auto it = distance_map_.find(idx);
+        return (it != distance_map_.end()) ? it->second : INF;
+    };
+    
+    // 辅助函数：尝试从邻居更新当前点的距离
+    // 返回更新后的距离值
+    auto try_update_from_neighbor = [&](uint8_t current_dist, int nx, int ny, int base_z) -> uint8_t {
+        uint8_t min_dist = current_dist;
+        
+        // 在Z轴连通范围内搜索邻居
+        for (int dz = -z_search; dz <= z_search; ++dz) {
+            int nz = base_z + dz;
+            uint8_t neighbor_dist = get_distance(nx, ny, nz);
             
-            // 更新距离值
-            // 重要：只有当距离不是INF时才截断到MAX_DISTANCE_U8
-            // INF值（255）表示未到达的点，应该保持为INF以区别于距离正好为max_distance的点
-            if (current_dist < INF) {
-                // 实际计算的距离值：截断到最大距离范围内
-                distance_map_[idx] = std::min(current_dist, MAX_DISTANCE_U8);
-            } else {
-                // INF值：保持为INF（255），表示该点附近没有障碍物，不应被惩罚
-                distance_map_[idx] = INF;
+            if (neighbor_dist < INF) {
+                uint8_t new_dist = static_cast<uint8_t>(neighbor_dist + 1);
+                if (new_dist > MAX_DISTANCE_U8) {
+                    new_dist = MAX_DISTANCE_U8;
+                }
+                min_dist = std::min(min_dist, new_dist);
+            }
+        }
+        
+        return min_dist;
+    };
+    
+    // ===== 前向扫描 (Forward Pass): 从左上到右下 =====
+    // 只检查已处理的邻居：左(-1,0)、上(0,-1)
+    
+    // 外层循环：XY平面从左上到右下
+    for (int y = 0; y < ny; ++y) {
+        for (int x = 0; x < nx; ++x) {
+            // 内层循环：遍历该XY位置上的所有Z层Surface点
+            for (int z = 0; z < nz; ++z) {
+                if (!isValidIdx(x, y, z)) continue;
+                size_t idx = index3DTo1D(x, y, z);
+                
+                // 检查是否是Surface点
+                if (idx >= surface_array_.size() || !surface_array_[idx]) continue;
+                
+                auto it = distance_map_.find(idx);
+                if (it == distance_map_.end()) continue;
+                
+                uint8_t current_dist = it->second;
+                if (current_dist == 0 || current_dist == 1) continue;
+                
+                // 检查2个前向邻居方向（考虑Z轴连通性）
+                current_dist = try_update_from_neighbor(current_dist, x - 1, y, z);
+                current_dist = try_update_from_neighbor(current_dist, x, y - 1, z);
+                
+                // 更新距离值
+                distance_map_[idx] = current_dist;
+            }
+        }
+    }
+    
+    // ===== 后向扫描 (Backward Pass): 从右下到左上 =====
+    // 只检查已处理的邻居：右(1,0)、下(0,1)
+    
+    // 外层循环：XY平面从右下到左上
+    for (int y = ny - 1; y >= 0; --y) {
+        for (int x = nx - 1; x >= 0; --x) {
+            // 内层循环：遍历该XY位置上的所有Z层Surface点
+            for (int z = nz - 1; z >= 0; --z) {
+                if (!isValidIdx(x, y, z)) continue;
+                size_t idx = index3DTo1D(x, y, z);
+                
+                // 检查是否是Surface点
+                if (idx >= surface_array_.size() || !surface_array_[idx]) continue;
+                
+                auto it = distance_map_.find(idx);
+                if (it == distance_map_.end()) continue;
+                
+                uint8_t current_dist = it->second;
+                if (current_dist == 0 || current_dist == 1) continue;
+                
+                // 检查2个后向邻居方向（考虑Z轴连通性）
+                current_dist = try_update_from_neighbor(current_dist, x + 1, y, z);
+                current_dist = try_update_from_neighbor(current_dist, x, y + 1, z);
+                
+                // 更新距离值，并限制在MAX_DISTANCE范围内
+                if (current_dist < INF) {
+                    distance_map_[idx] = std::min(current_dist, MAX_DISTANCE_U8);
+                } else {
+                    distance_map_[idx] = INF;
+                }
             }
         }
     }

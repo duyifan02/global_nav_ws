@@ -13,6 +13,7 @@
 #include "jps_planner_3d/voxel_map.hpp"
 #include "nav_interfaces/srv/set_voxel_map.hpp"
 #include "nav_interfaces/srv/plan_path.hpp"
+#include "nav_interfaces/srv/get_distance_field.hpp"
 
 namespace jps_planner_3d
 {
@@ -45,6 +46,10 @@ public:
     plan_service_ = create_service<srv::PlanPath>(
       "plan_path",
       std::bind(&JpsPlannerNode::handlePlanPath, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
+
+    get_distance_field_service_ = create_service<srv::GetDistanceField>(
+      "get_distance_field",
+      std::bind(&JpsPlannerNode::handleGetDistanceField, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 
     RCLCPP_INFO(get_logger(), "JPS planner node ready. Waiting for voxel map...");
   }
@@ -188,12 +193,68 @@ private:
     RCLCPP_INFO(get_logger(), "plan_path success: poses=%zu", path.size());
   }
 
+  void handleGetDistanceField(
+    const std::shared_ptr<rmw_request_id_t> /*unused*/,
+    const std::shared_ptr<srv::GetDistanceField::Request> /*request*/,
+    std::shared_ptr<srv::GetDistanceField::Response> response)
+  {
+    RCLCPP_INFO(get_logger(), "get_distance_field: retrieving distance field data");
+
+    std::shared_ptr<VoxelMap> map_copy;
+    {
+      std::lock_guard<std::mutex> lock(map_mutex_);
+      map_copy = voxel_map_;
+    }
+
+    if (!map_copy || !map_copy->isReady()) {
+      response->success = false;
+      response->message = "Voxel map is not ready";
+      return;
+    }
+
+    // Get surface voxels
+    const auto& surface_voxels = map_copy->getValidSurfaceVoxels();
+    
+    if (surface_voxels.empty()) {
+      response->success = false;
+      response->message = "No surface voxels available";
+      return;
+    }
+
+    // Populate response
+    response->resolution = map_copy->getResolution();
+    response->surface_points.reserve(surface_voxels.size());
+    response->distances.reserve(surface_voxels.size());
+
+    for (const auto& voxel : surface_voxels) {
+      auto [ix, iy, iz] = voxel;
+      auto [x, y, z] = map_copy->gridToWorld(ix, iy, iz);
+      
+      geometry_msgs::msg::Point pt;
+      pt.x = x;
+      pt.y = y;
+      pt.z = z;
+      response->surface_points.push_back(pt);
+      
+      // Get distance value
+      int dist = map_copy->getDistanceToObstacle(ix, iy, iz);
+      response->distances.push_back(static_cast<uint8_t>(dist));
+    }
+
+    response->success = true;
+    response->message = "Distance field retrieved";
+    
+    RCLCPP_INFO(get_logger(), "get_distance_field success: %zu surface points", 
+                surface_voxels.size());
+  }
+
   std::shared_ptr<VoxelMap> voxel_map_;
   std::shared_ptr<JPS3D> planner_;
   std::mutex map_mutex_;
 
   rclcpp::Service<srv::SetVoxelMap>::SharedPtr set_map_service_;
   rclcpp::Service<srv::PlanPath>::SharedPtr plan_service_;
+  rclcpp::Service<srv::GetDistanceField>::SharedPtr get_distance_field_service_;
 };
 
 }  // namespace jps_planner_3d
