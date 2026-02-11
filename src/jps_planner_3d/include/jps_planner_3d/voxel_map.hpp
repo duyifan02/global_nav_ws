@@ -226,14 +226,16 @@ public:
     double getTraversabilityTimeMs() const { return traversability_time_ms_; }
 
     /**
-     * @brief Surface Graph 节点结构
+     * @brief Surface Graph 节点结构（扁平化邻接表）
      * 
      * 用于A*搜索的优化数据结构，预计算邻居关系
+     * 邻居存储在全局扁平数组 all_neighbors 中
      */
     struct SurfaceNode {
         int x, y, z;           // 网格坐标
         int distance;          // 到障碍物距离（来自距离场）
-        std::vector<int> neighbors;  // 邻居节点索引列表（在surface_graph_中的索引）
+        int neighbor_start;    // 邻居在 all_neighbors 中的起始位置
+        int neighbor_count;   // 邻居数量
     };
 
     /**
@@ -242,6 +244,13 @@ public:
      * @return Surface节点数组的常量引用
      */
     const std::vector<SurfaceNode>& getSurfaceGraph() const { return surface_graph_; }
+
+    /**
+     * @brief 获取扁平化邻居数组
+     * 
+     * @return 所有邻居的连续数组
+     */
+    const std::vector<int>& getAllNeighbors() const { return all_neighbors_; }
 
     /**
      * @brief 将网格坐标转换为Surface Graph索引
@@ -290,9 +299,10 @@ private:
     std::vector<bool> surface_array_;      // Surface标记数组（直接索引，O(1)查询，1 bit per voxel）
     std::unordered_map<size_t, uint8_t> distance_map_; // 距离场映射（只存储surface点，8 bits per value，最大255）
     
-    // Surface Graph 优化结构（用于A*搜索）
-    std::vector<SurfaceNode> surface_graph_;  // Surface节点数组，连续存储
-    std::unordered_map<size_t, int> coord_to_surface_idx_;  // 网格坐标→graph索引映射
+    // Surface Graph 优化结构（扁平化邻接表）
+    std::vector<SurfaceNode> surface_graph_;      // Surface节点数组，连续存储
+    std::vector<int> all_neighbors_;              // 所有邻居的扁平数组
+    std::unordered_map<size_t, int> coord_to_surface_idx_;  // 网格坐标→graph索引映射（构建时用）
     
     std::tuple<int, int, int> grid_size_;   // 网格尺寸 (nx, ny, nz)
     std::tuple<double, double, double> min_bound_;  // 最小边界

@@ -634,16 +634,17 @@ void VoxelMap::buildSurfaceGraph()
         return;
     }
     
-    // 清空旧数据
-    surface_graph_.clear();
-    surface_graph_.reserve(valid_surface_voxels_.size());
-    coord_to_surface_idx_.clear();
-    coord_to_surface_idx_.reserve(valid_surface_voxels_.size());
-    
+    const size_t n = valid_surface_voxels_.size();
     int z_search = static_cast<int>(std::ceil(connectivity_height_threshold_ / resolution_));
     
+    // 清空旧数据
+    surface_graph_.clear();
+    surface_graph_.reserve(n);
+    coord_to_surface_idx_.clear();
+    coord_to_surface_idx_.reserve(n);
+    
     // Step 1: 创建所有 SurfaceNode 并建立坐标到索引的映射
-    for (size_t i = 0; i < valid_surface_voxels_.size(); ++i) {
+    for (size_t i = 0; i < n; ++i) {
         auto [x, y, z] = valid_surface_voxels_[i];
         size_t grid_idx = index3DTo1D(x, y, z);
         
@@ -651,20 +652,26 @@ void VoxelMap::buildSurfaceGraph()
         node.x = x;
         node.y = y;
         node.z = z;
+        node.distance = 255;
+        node.neighbor_start = -1;
+        node.neighbor_count = 0;
         
         // 从 distance_map_ 获取距离值
         auto it = distance_map_.find(grid_idx);
-        node.distance = (it != distance_map_.end()) ? it->second : 255;
+        if (it != distance_map_.end()) {
+            node.distance = it->second;
+        }
         
         surface_graph_.push_back(node);
         coord_to_surface_idx_[grid_idx] = static_cast<int>(i);
     }
     
-    // Step 2: 为每个节点预计算邻居
-    for (size_t i = 0; i < surface_graph_.size(); ++i) {
-        SurfaceNode& node = surface_graph_[i];
+    // Step 2: 第一遍 - 统计每个节点的邻居数量
+    std::vector<int> neighbor_counts(n, 0);
+    
+    for (size_t i = 0; i < n; ++i) {
+        const auto& node = surface_graph_[i];
         
-        // 搜索 8 邻域（XY平面）
         for (int dx = -1; dx <= 1; ++dx) {
             for (int dy = -1; dy <= 1; ++dy) {
                 if (dx == 0 && dy == 0) continue;
@@ -675,7 +682,7 @@ void VoxelMap::buildSurfaceGraph()
                 // 优先检查同层
                 int neighbor_idx = coordToSurfaceIdx(nx, ny, node.z);
                 if (neighbor_idx >= 0) {
-                    node.neighbors.push_back(neighbor_idx);
+                    neighbor_counts[i]++;
                     continue;
                 }
                 
@@ -688,12 +695,60 @@ void VoxelMap::buildSurfaceGraph()
                         int nz = node.z + sign * dz_abs;
                         neighbor_idx = coordToSurfaceIdx(nx, ny, nz);
                         if (neighbor_idx >= 0) {
-                            node.neighbors.push_back(neighbor_idx);
+                            neighbor_counts[i]++;
                             goto next_neighbor;
                         }
                     }
                 }
                 next_neighbor:;
+            }
+        }
+    }
+    
+    // Step 3: 计算 all_neighbors_ 的总大小并预分配
+    size_t total_neighbors = 0;
+    for (size_t i = 0; i < n; ++i) {
+        surface_graph_[i].neighbor_start = static_cast<int>(total_neighbors);
+        surface_graph_[i].neighbor_count = neighbor_counts[i];
+        total_neighbors += neighbor_counts[i];
+    }
+    all_neighbors_.clear();
+    all_neighbors_.reserve(total_neighbors);
+    
+    // Step 4: 第二遍 - 填充 all_neighbors_
+    size_t current_pos = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const auto& node = surface_graph_[i];
+        
+        for (int dx = -1; dx <= 1; ++dx) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                if (dx == 0 && dy == 0) continue;
+                
+                int nx = node.x + dx;
+                int ny = node.y + dy;
+                
+                // 优先检查同层
+                int neighbor_idx = coordToSurfaceIdx(nx, ny, node.z);
+                if (neighbor_idx >= 0) {
+                    all_neighbors_.push_back(neighbor_idx);
+                    continue;
+                }
+                
+                // 螺旋搜索 Z 方向
+                for (int dz_abs = 1; dz_abs <= z_search; ++dz_abs) {
+                    double height_diff = dz_abs * resolution_;
+                    if (height_diff > connectivity_height_threshold_) break;
+                    
+                    for (int sign : {-1, 1}) {
+                        int nz = node.z + sign * dz_abs;
+                        neighbor_idx = coordToSurfaceIdx(nx, ny, nz);
+                        if (neighbor_idx >= 0) {
+                            all_neighbors_.push_back(neighbor_idx);
+                            goto next_neighbor2;
+                        }
+                    }
+                }
+                next_neighbor2:;
             }
         }
     }

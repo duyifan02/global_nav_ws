@@ -180,37 +180,16 @@ private:
     auto t_end = std::chrono::high_resolution_clock::now();
     double planning_time_ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
     
-    const auto stats = planner_copy->getSearchStats();
-    int64_t expanded_nodes = 0;
-    if (auto it = stats.find("expanded_nodes"); it != stats.end()) {
-      expanded_nodes = it->second;
-    }
-
+    int64_t expanded_nodes = planner_copy->getExpandedNodes();
+    
     if (path.empty()) {
       response->success = false;
-      auto it = stats.find("failure_reason");
-      if (stats.find("cancelled") != stats.end()) {
-        response->message = "Planning was cancelled";
-      } else if (it != stats.end()) {
-        switch (it->second) {
-          case 1: response->message = "Start or goal outside voxel map"; break;
-          case 2: response->message = "Start is not on a valid surface"; break;
-          case 3: response->message = "Goal is not on a valid surface"; break;
-          default: response->message = "Planner returned empty path"; break;
-        }
-      } else {
-        response->message = "Planner returned empty path";
-      }
+      response->message = "Planner returned empty path";
       response->planning_time_ms = planning_time_ms;
       response->expanded_nodes = expanded_nodes;
       response->memory_usage_bytes = 0;
-      // 打印详细统计信息
-      std::string stats_str;
-      for (const auto& [key, value] : stats) {
-        stats_str += key + "=" + std::to_string(value) + " ";
-      }
-      RCLCPP_WARN(get_logger(), "plan_path failed: %s (%.2f ms) stats: %s", 
-                  response->message.c_str(), planning_time_ms, stats_str.c_str());
+      RCLCPP_WARN(get_logger(), "plan_path failed: %s (%.2f ms) expanded=%d", 
+                  response->message.c_str(), planning_time_ms, expanded_nodes);
       return;
     }
 
