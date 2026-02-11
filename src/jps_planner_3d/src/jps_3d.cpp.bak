@@ -19,8 +19,7 @@ JPS3D::JPS3D(
 , max_z_change_(max_z_change)
 , z_penalty_weight_(z_penalty_weight)
 , potential_weight_(potential_weight)
-, max_iterations_(50000)  // 降低到50K以提高响应速度
-, cancel_planning_(false)
+, max_iterations_(50000)
 {
     // 地面机器人模式：使用Surface A*策略，不需要预生成搜索方向
     // getSuccessors() 直接搜索XY平面的8邻域
@@ -30,19 +29,11 @@ JPS3D::~JPS3D()
 {
 }
 
-void JPS3D::cancelPlanning()
-{
-    cancel_planning_ = true;
-}
-
 std::vector<std::tuple<double, double, double>> JPS3D::plan(
 	const std::tuple<double, double, double>& start_pos,
 	const std::tuple<double, double, double>& goal_pos,
 	bool snap_to_surface)
 {
-    // 重置取消标志，开始新的规划
-    cancel_planning_ = false;
-
     // 清空之前的统计信息
     search_stats_.clear();
 
@@ -71,22 +62,16 @@ std::vector<std::tuple<double, double, double>> JPS3D::plan(
 			return {};
 		}
 
-		// 减小搜索半径以提高响应速度 (从5.0改为2.0)
-		int search_radius = static_cast<int>(2.0 / voxel_map_->getResolution());
+		// 增大搜索半径以确保能找到有效surface
+		int search_radius = static_cast<int>(5.0 / voxel_map_->getResolution());
 
-		// 传递取消检查回调，确保搜索过程可以被中断
+		// 移除取消检查，直接搜索
 		auto nearest = voxel_map_->findNearestValidSurface(
-			sx, sy, sz, search_radius,
-			[this]() { return cancel_planning_.load(); });
+			sx, sy, sz, search_radius);
 
 		if (std::get<0>(nearest) >= 0) {
 			start_idx = nearest;
 		} else {
-			// 检查是否因为取消而失败
-			if (cancel_planning_) {
-				search_stats_["cancelled"] = 1;
-				return {};
-			}
 			// 如果找不到有效Surface，直接返回失败
 			search_stats_["failure_reason"] = 2; // 2 = no valid surface near start
 			return {};
@@ -101,23 +86,16 @@ std::vector<std::tuple<double, double, double>> JPS3D::plan(
 			return {};
 		}
 
-		// 减小搜索半径以提高响应速度 (从5.0改为2.0)
-		int search_radius = static_cast<int>(2.0 / voxel_map_->getResolution());
+		// 增大搜索半径以确保能找到有效surface
+		int search_radius = static_cast<int>(5.0 / voxel_map_->getResolution());
 
-		// 传递取消检查回调，确保搜索过程可以被中断
 		auto nearest = voxel_map_->findNearestValidSurface(
-			gx, gy, gz, search_radius,
-			[this]() { return cancel_planning_.load(); });
+			gx, gy, gz, search_radius);
 
 		if (std::get<0>(nearest) >= 0) {
 			goal_idx = nearest;
 		} else {
-			// 检查是否因为取消而失败
-			if (cancel_planning_) {
-				search_stats_["cancelled"] = 1;
-				return {};
-			}
-			search_stats_["failure_reason"] = 3; // 3 = no valid surface near goal
+			search_stats_["failure_reason"] = 3;
 			return {};
 		}
 	}
@@ -144,6 +122,13 @@ std::vector<std::tuple<int, int, int>> JPS3D::jpsSearch(
     const std::tuple<int, int, int>& start,
     const std::tuple<int, int, int>& goal)
 {
+    // Debug: 打印起点和终点信息
+    auto [sx, sy, sz] = start;
+    auto [gx, gy, gz] = goal;
+    bool start_valid = voxel_map_->isSurfaceValid(sx, sy, sz);
+    bool goal_valid = voxel_map_->isSurfaceValid(gx, gy, gz);
+    printf("[JPS Debug] start=(%d,%d,%d) surface_valid=%d, goal=(%d,%d,%d) surface_valid=%d\n",
+           sx, sy, sz, start_valid, gx, gy, gz, goal_valid);
     // 优先队列: (f_score, counter, node)
     using QueueElement = std::tuple<double, int, std::tuple<int, int, int>>;
     std::priority_queue<QueueElement, std::vector<QueueElement>, std::greater<QueueElement>> open_set;
@@ -169,7 +154,7 @@ std::vector<std::tuple<int, int, int>> JPS3D::jpsSearch(
     explored_nodes_.clear();
     explored_nodes_.reserve(1000);  // 预留1000个节点的空间
 
-    while (!open_set.empty() && iterations < max_iterations_ && !cancel_planning_) {
+    while (!open_set.empty() && iterations < max_iterations_) {
         iterations++;
         auto [current_f, _, current] = open_set.top();
         open_set.pop();
@@ -184,7 +169,7 @@ std::vector<std::tuple<int, int, int>> JPS3D::jpsSearch(
         // 到达目标
         if (current == goal) {
             // 记录搜索统计
-            search_stats_["explored_nodes"] = static_cast<int>(explored_nodes_.size());
+            search_stats_["expanded_nodes"] = static_cast<int>(closed_set.size());
             search_stats_["closed_nodes"] = static_cast<int>(closed_set.size());
             search_stats_["iterations"] = iterations;
             search_stats_["open_set_size"] = static_cast<int>(open_set.size());
@@ -261,18 +246,6 @@ std::vector<std::tuple<int, int, int>> JPS3D::jpsSearch(
         }
     }
     
-    // 检查循环退出原因
-    if (cancel_planning_) {
-        // 规划被取消
-        search_stats_["explored_nodes"] = static_cast<int>(explored_nodes_.size());
-        search_stats_["closed_nodes"] = static_cast<int>(closed_set.size());
-        search_stats_["iterations"] = iterations;
-        search_stats_["open_set_size"] = static_cast<int>(open_set.size());
-        search_stats_["success"] = 0;
-        search_stats_["cancelled"] = 1;
-        return {};
-    }
-
     // 如果一直找不到路径，可能是因为起点/终点虽然经过了吸附，但所在的连通域不连通
     // 或者中间存在无法逾越的障碍（如楼梯太高）
     if (explored_nodes_.size() > 100 && closed_set.size() > 10) {
@@ -281,12 +254,11 @@ std::vector<std::tuple<int, int, int>> JPS3D::jpsSearch(
     }
 
     // 超过最大迭代次数或未找到路径
-    search_stats_["explored_nodes"] = static_cast<int>(explored_nodes_.size());
+    search_stats_["expanded_nodes"] = static_cast<int>(closed_set.size());
     search_stats_["closed_nodes"] = static_cast<int>(closed_set.size());
     search_stats_["iterations"] = iterations;
     search_stats_["open_set_size"] = static_cast<int>(open_set.size());
     search_stats_["success"] = 0;
-    search_stats_["cancelled"] = 0;
 
     return {};
 }
@@ -308,11 +280,6 @@ std::vector<std::tuple<int, int, int>> JPS3D::getSuccessors(
         for (int dy = -1; dy <= 1; ++dy) {
             if (dx == 0 && dy == 0) continue;
 
-            // 检查取消标志（每处理一个XY邻居检查一次）
-            if (cancel_planning_.load()) {
-                return successors;  // 立即返回已找到的邻居
-            }
-
             int nx = cx + dx;
             int ny = cy + dy;
 
@@ -324,7 +291,14 @@ std::vector<std::tuple<int, int, int>> JPS3D::getSuccessors(
             // 先检查同一高度
             if (voxel_map_->isSurfaceValid(nx, ny, cz)) {
                 successors.emplace_back(nx, ny, cz);
-                continue;  // 找到最优（高度差为0），直接处理下一个XY邻居
+                continue;
+            }
+            
+            // Debug: 如果同层不是surface，打印调试信息（只打印一次）
+            static int debug_count = 0;
+            if (debug_count < 8) {
+                printf("[JPS Debug] neighbor (%d,%d,%d) not valid surface\n", nx, ny, cz);
+                debug_count++;
             }
 
             // 螺旋向上下搜索

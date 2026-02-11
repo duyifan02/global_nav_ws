@@ -30,7 +30,7 @@ public:
     declare_parameter<double>("connectivity_height_threshold", 0.6);
     declare_parameter<double>("surface_clearance_height", 0.8);
     declare_parameter<int>("distance_field_max_distance", 5);
-    declare_parameter<int>("bfs_neighbor_distance", 2);
+    declare_parameter<int>("bfs_neighbor_distance", 1);
     declare_parameter<double>("heuristic_weight", 1.0);
     declare_parameter<double>("max_z_change", 0.5);
     declare_parameter<double>("z_penalty_weight", 3.0);
@@ -131,6 +131,7 @@ private:
     response->success = true;
     response->message = "Voxel map updated";
     response->surface_voxel_count = static_cast<int64_t>(surface_count);
+    response->traversability_time_ms = voxel_map_->getTraversabilityTimeMs();
     
     auto [nx, ny, nz] = voxel_map_->getGridSize();
     RCLCPP_INFO(get_logger(),
@@ -203,7 +204,13 @@ private:
       response->planning_time_ms = planning_time_ms;
       response->expanded_nodes = expanded_nodes;
       response->memory_usage_bytes = 0;
-      RCLCPP_WARN(get_logger(), "plan_path failed: %s (%.2f ms)", response->message.c_str(), planning_time_ms);
+      // 打印详细统计信息
+      std::string stats_str;
+      for (const auto& [key, value] : stats) {
+        stats_str += key + "=" + std::to_string(value) + " ";
+      }
+      RCLCPP_WARN(get_logger(), "plan_path failed: %s (%.2f ms) stats: %s", 
+                  response->message.c_str(), planning_time_ms, stats_str.c_str());
       return;
     }
 

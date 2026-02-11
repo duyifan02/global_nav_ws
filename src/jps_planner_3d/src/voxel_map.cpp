@@ -4,6 +4,7 @@
 #include <limits>
 #include <functional>
 #include <queue>
+#include <chrono>
 
 namespace jps_planner_3d
 {
@@ -96,7 +97,14 @@ bool VoxelMap::updateFromPoints(const std::vector<std::tuple<float, float, float
         }
     }
 
+    auto t_build_start = std::chrono::high_resolution_clock::now();
     buildReachableMap(seed_point);
+    auto t_build_end = std::chrono::high_resolution_clock::now();
+    traversability_time_ms_ = std::chrono::duration<double, std::milli>(t_build_end - t_build_start).count();
+    
+    // 构建 Surface Graph 用于A*搜索加速
+    buildSurfaceGraph();
+    
     voxel_array_.clear();
     voxel_array_.shrink_to_fit();
 
@@ -609,5 +617,86 @@ void VoxelMap::computeDistanceFieldOnSurface()
     }
 }
 
+
+int VoxelMap::coordToSurfaceIdx(int ix, int iy, int iz) const
+{
+    size_t grid_idx = index3DTo1D(ix, iy, iz);
+    auto it = coord_to_surface_idx_.find(grid_idx);
+    if (it != coord_to_surface_idx_.end()) {
+        return it->second;
+    }
+    return -1;
+}
+
+void VoxelMap::buildSurfaceGraph()
+{
+    if (valid_surface_voxels_.empty()) {
+        return;
+    }
+    
+    // 清空旧数据
+    surface_graph_.clear();
+    surface_graph_.reserve(valid_surface_voxels_.size());
+    coord_to_surface_idx_.clear();
+    coord_to_surface_idx_.reserve(valid_surface_voxels_.size());
+    
+    int z_search = static_cast<int>(std::ceil(connectivity_height_threshold_ / resolution_));
+    
+    // Step 1: 创建所有 SurfaceNode 并建立坐标到索引的映射
+    for (size_t i = 0; i < valid_surface_voxels_.size(); ++i) {
+        auto [x, y, z] = valid_surface_voxels_[i];
+        size_t grid_idx = index3DTo1D(x, y, z);
+        
+        SurfaceNode node;
+        node.x = x;
+        node.y = y;
+        node.z = z;
+        
+        // 从 distance_map_ 获取距离值
+        auto it = distance_map_.find(grid_idx);
+        node.distance = (it != distance_map_.end()) ? it->second : 255;
+        
+        surface_graph_.push_back(node);
+        coord_to_surface_idx_[grid_idx] = static_cast<int>(i);
+    }
+    
+    // Step 2: 为每个节点预计算邻居
+    for (size_t i = 0; i < surface_graph_.size(); ++i) {
+        SurfaceNode& node = surface_graph_[i];
+        
+        // 搜索 8 邻域（XY平面）
+        for (int dx = -1; dx <= 1; ++dx) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                if (dx == 0 && dy == 0) continue;
+                
+                int nx = node.x + dx;
+                int ny = node.y + dy;
+                
+                // 优先检查同层
+                int neighbor_idx = coordToSurfaceIdx(nx, ny, node.z);
+                if (neighbor_idx >= 0) {
+                    node.neighbors.push_back(neighbor_idx);
+                    continue;
+                }
+                
+                // 螺旋搜索 Z 方向
+                for (int dz_abs = 1; dz_abs <= z_search; ++dz_abs) {
+                    double height_diff = dz_abs * resolution_;
+                    if (height_diff > connectivity_height_threshold_) break;
+                    
+                    for (int sign : {-1, 1}) {
+                        int nz = node.z + sign * dz_abs;
+                        neighbor_idx = coordToSurfaceIdx(nx, ny, nz);
+                        if (neighbor_idx >= 0) {
+                            node.neighbors.push_back(neighbor_idx);
+                            goto next_neighbor;
+                        }
+                    }
+                }
+                next_neighbor:;
+            }
+        }
+    }
+}
 
 }  // namespace jps_planner_3d

@@ -6,5 +6,6 @@ bool success
 string message
 nav_msgs/Path path
 float64 planning_time_ms
+float64 traversability_time_ms
 int64 expanded_nodes
 int64 memory_usage_bytes

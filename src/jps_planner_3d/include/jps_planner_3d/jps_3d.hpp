@@ -10,7 +10,6 @@
 #include <queue>
 #include <limits>
 #include <functional>
-#include <atomic>
 
 namespace jps_planner_3d
 {
@@ -61,14 +60,6 @@ public:
 		const std::tuple<double, double, double>& start_pos,
 		const std::tuple<double, double, double>& goal_pos,
 		bool snap_to_surface = true);
-
-    /**
-     * @brief 取消当前正在进行的规划
-     *
-     * 设置取消标志，使得正在进行的plan()调用尽快返回空路径
-     * 该方法是线程安全的，可以从任何线程调用
-     */
-    void cancelPlanning();
 
     /**
      * @brief 获取搜索统计信息
@@ -153,8 +144,6 @@ private:
 
     std::vector<std::tuple<int, int, int>> explored_nodes_;  // 探索的节点
     std::unordered_map<std::string, int> search_stats_;       // 搜索统计
-
-    std::atomic<bool> cancel_planning_;  // 取消标志，用于中断正在进行的规划
 };
 
 }  // namespace jps_planner_3d

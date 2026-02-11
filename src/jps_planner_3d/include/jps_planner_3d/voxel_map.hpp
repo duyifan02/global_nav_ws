@@ -218,6 +218,39 @@ public:
      */
     std::tuple<int, int, int> getGridSize() const { return grid_size_; }
 
+    /**
+     * @brief 获取可通行性估计时间 (Te: traversability estimation time)
+     * 
+     * @return buildReachableMap 耗时（毫秒）
+     */
+    double getTraversabilityTimeMs() const { return traversability_time_ms_; }
+
+    /**
+     * @brief Surface Graph 节点结构
+     * 
+     * 用于A*搜索的优化数据结构，预计算邻居关系
+     */
+    struct SurfaceNode {
+        int x, y, z;           // 网格坐标
+        int distance;          // 到障碍物距离（来自距离场）
+        std::vector<int> neighbors;  // 邻居节点索引列表（在surface_graph_中的索引）
+    };
+
+    /**
+     * @brief 获取Surface Graph
+     * 
+     * @return Surface节点数组的常量引用
+     */
+    const std::vector<SurfaceNode>& getSurfaceGraph() const { return surface_graph_; }
+
+    /**
+     * @brief 将网格坐标转换为Surface Graph索引
+     * 
+     * @param ix, iy, iz 网格坐标
+     * @return 节点索引，如果不存在返回-1
+     */
+    int coordToSurfaceIdx(int ix, int iy, int iz) const;
+
 private:
     /**
      * @brief 从指定种子点开始BFS构建可到达区域
@@ -235,6 +268,13 @@ private:
      */
     void computeDistanceFieldOnSurface();
 
+    /**
+     * @brief 构建Surface Graph
+     * 
+     * 预计算所有surface节点的邻居关系，用于A*搜索加速
+     */
+    void buildSurfaceGraph();
+
     double resolution_;                    // 体素分辨率
     double free_space_margin_;              // 自由空间缓冲
     double connectivity_height_threshold_ = 0.6; // 连通性高度阈值
@@ -250,10 +290,16 @@ private:
     std::vector<bool> surface_array_;      // Surface标记数组（直接索引，O(1)查询，1 bit per voxel）
     std::unordered_map<size_t, uint8_t> distance_map_; // 距离场映射（只存储surface点，8 bits per value，最大255）
     
+    // Surface Graph 优化结构（用于A*搜索）
+    std::vector<SurfaceNode> surface_graph_;  // Surface节点数组，连续存储
+    std::unordered_map<size_t, int> coord_to_surface_idx_;  // 网格坐标→graph索引映射
+    
     std::tuple<int, int, int> grid_size_;   // 网格尺寸 (nx, ny, nz)
     std::tuple<double, double, double> min_bound_;  // 最小边界
     std::tuple<double, double, double> max_bound_;  // 最大边界
     std::tuple<double, double, double> origin_;     // 原点
+    
+    double traversability_time_ms_ = 0.0;  // Te: traversability estimation time (buildReachableMap)
 
     /**
      * @brief 将3D索引转换为1D索引
