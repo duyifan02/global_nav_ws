@@ -167,7 +167,7 @@ double JPS3D::heuristic(int node1_idx, int node2_idx) const
     int dz = std::abs(n1.z - n2.z);
     int chebyshev = std::max({dx, dy, dz});
     
-    return static_cast<double>(chebyshev) + std::abs(n1.distance - n2.distance) * 0.1;
+    return static_cast<double>(chebyshev) + std::abs(n1.distance - n2.distance) * 2.0;
 }
 
 double JPS3D::distance(int node1_idx, int node2_idx) const
