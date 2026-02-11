@@ -2,6 +2,7 @@
 #include <mutex>
 #include <vector>
 #include <string>
+#include <chrono>
 
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/pose.hpp>
@@ -29,6 +30,7 @@ public:
     declare_parameter<double>("connectivity_height_threshold", 0.6);
     declare_parameter<double>("surface_clearance_height", 0.8);
     declare_parameter<int>("distance_field_max_distance", 5);
+    declare_parameter<int>("bfs_neighbor_distance", 2);
     declare_parameter<double>("heuristic_weight", 1.0);
     declare_parameter<double>("max_z_change", 0.5);
     declare_parameter<double>("z_penalty_weight", 3.0);
@@ -61,6 +63,7 @@ private:
     voxel_map_->setConnectivityHeightThreshold(get_parameter("connectivity_height_threshold").as_double());
     voxel_map_->setSurfaceClearanceHeight(get_parameter("surface_clearance_height").as_double());
     voxel_map_->setDistanceFieldMaxDistance(get_parameter("distance_field_max_distance").as_int());
+    voxel_map_->setBfsNeighborDistance(get_parameter("bfs_neighbor_distance").as_int());
   }
 
   void rebuildPlanner()
@@ -78,12 +81,14 @@ private:
     const std::shared_ptr<srv::SetVoxelMap::Request> request,
     std::shared_ptr<srv::SetVoxelMap::Response> response)
   {
-    RCLCPP_INFO(get_logger(), "set_voxel_map: occupied=%zu, res=%.3f, margin=%.3f",
-      request->occupied.size(), request->resolution, request->free_space_margin);
+    RCLCPP_INFO(get_logger(), "set_voxel_map: occupied=%zu, res=%.3f, margin=%.3f, seed=(%.2f, %.2f, %.2f)",
+      request->occupied.size(), request->resolution, request->free_space_margin,
+      request->seed_point.x, request->seed_point.y, request->seed_point.z);
 
     if (request->resolution <= 0.0 || request->free_space_margin < 0.0) {
       response->success = false;
       response->message = "Resolution must be > 0 and free_space_margin must be >= 0";
+      response->surface_voxel_count = 0;
       return;
     }
 
@@ -93,26 +98,41 @@ private:
       voxels.emplace_back(static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z));
     }
 
+    std::tuple<float, float, float> seed_point = {
+      static_cast<float>(request->seed_point.x),
+      static_cast<float>(request->seed_point.y),
+      static_cast<float>(request->seed_point.z)
+    };
+    
+    bool use_seed = (request->seed_point.x != 0.0 || 
+                     request->seed_point.y != 0.0 || 
+                     request->seed_point.z != 0.0);
+
     {
       std::lock_guard<std::mutex> lock(map_mutex_);
       voxel_map_->setConnectivityHeightThreshold(get_parameter("connectivity_height_threshold").as_double());
       voxel_map_->setSurfaceClearanceHeight(get_parameter("surface_clearance_height").as_double());
       voxel_map_->setDistanceFieldMaxDistance(get_parameter("distance_field_max_distance").as_int());
+      voxel_map_->setBfsNeighborDistance(get_parameter("bfs_neighbor_distance").as_int());
       voxel_map_->setFreeSpaceMargin(request->free_space_margin);
 
-      bool updated = voxel_map_->updateFromPoints(voxels, request->resolution);
+      bool updated = voxel_map_->updateFromPoints(voxels, request->resolution, 
+                                                   use_seed ? &seed_point : nullptr);
       if (!updated) {
         response->success = false;
         response->message = "Failed to update voxel map (empty data?)";
+        response->surface_voxel_count = 0;
         return;
       }
       rebuildPlanner();
     }
 
+    const auto surface_count = voxel_map_->getValidSurfaceVoxels().size();
     response->success = true;
     response->message = "Voxel map updated";
+    response->surface_voxel_count = static_cast<int64_t>(surface_count);
+    
     auto [nx, ny, nz] = voxel_map_->getGridSize();
-    const auto surface_count = voxel_map_->getValidSurfaceVoxels().size();
     RCLCPP_INFO(get_logger(),
       "Voxel map ready: occupied=%zu, surface=%zu, grid=%d x %d x %d, res=%.3f",
       request->occupied.size(), surface_count, nx, ny, nz, request->resolution);
@@ -140,20 +160,33 @@ private:
     if (!map_copy || !map_copy->isReady()) {
       response->success = false;
       response->message = "Voxel map is not ready";
+      response->planning_time_ms = 0.0;
+      response->expanded_nodes = 0;
+      response->memory_usage_bytes = 0;
       return;
     }
 
     const auto & s = request->start.position;
     const auto & g = request->goal.position;
 
+    auto t_start = std::chrono::high_resolution_clock::now();
+    
     auto path = planner_copy->plan(
       {s.x, s.y, s.z},
       {g.x, g.y, g.z},
       request->snap_to_surface);
+    
+    auto t_end = std::chrono::high_resolution_clock::now();
+    double planning_time_ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
+    
+    const auto stats = planner_copy->getSearchStats();
+    int64_t expanded_nodes = 0;
+    if (auto it = stats.find("expanded_nodes"); it != stats.end()) {
+      expanded_nodes = it->second;
+    }
 
     if (path.empty()) {
       response->success = false;
-      const auto stats = planner_copy->getSearchStats();
       auto it = stats.find("failure_reason");
       if (stats.find("cancelled") != stats.end()) {
         response->message = "Planning was cancelled";
@@ -167,7 +200,10 @@ private:
       } else {
         response->message = "Planner returned empty path";
       }
-      RCLCPP_WARN(get_logger(), "plan_path failed: %s", response->message.c_str());
+      response->planning_time_ms = planning_time_ms;
+      response->expanded_nodes = expanded_nodes;
+      response->memory_usage_bytes = 0;
+      RCLCPP_WARN(get_logger(), "plan_path failed: %s (%.2f ms)", response->message.c_str(), planning_time_ms);
       return;
     }
 
@@ -189,8 +225,12 @@ private:
     response->success = true;
     response->message = "Path planned";
     response->path = std::move(ros_path);
+    response->planning_time_ms = planning_time_ms;
+    response->expanded_nodes = expanded_nodes;
+    response->memory_usage_bytes = 0;
 
-    RCLCPP_INFO(get_logger(), "plan_path success: poses=%zu", path.size());
+    RCLCPP_INFO(get_logger(), "plan_path success: poses=%zu, time=%.2f ms, expanded=%ld", 
+                path.size(), planning_time_ms, expanded_nodes);
   }
 
   void handleGetDistanceField(

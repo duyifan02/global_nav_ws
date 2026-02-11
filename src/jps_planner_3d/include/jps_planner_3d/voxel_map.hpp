@@ -43,10 +43,13 @@ public:
      *
      * @param occupied_voxels 占据体素的世界坐标列表
      * @param resolution 体素分辨率
+     * @param seed_point 可选的BFS种子点（世界坐标），用于指定可行走区域的起始位置
+     *                   如果为nullptr，则从原点附近自动搜索
      * @return true表示更新成功，false表示失败
      */
     bool updateFromPoints(const std::vector<std::tuple<float, float, float>>& occupied_voxels,
-                          double resolution);
+                          double resolution,
+                          const std::tuple<float, float, float>* seed_point = nullptr);
 
     /**
      * @brief 检查地图是否就绪
@@ -200,6 +203,15 @@ public:
     }
 
     /**
+     * @brief 设置BFS邻域搜索距离
+     * 
+     * @param distance XY平面上搜索相邻Surface的距离（网格单位）
+     *                 对于稀疏点云（如0.2m间距+0.1m分辨率），设为2
+     *                 对于稠密点云（间距≈分辨率），设为1
+     */
+    void setBfsNeighborDistance(int distance) { bfs_neighbor_distance_ = std::max(1, distance); }
+
+    /**
      * @brief 获取网格尺寸
      * 
      * @return 网格尺寸 (nx, ny, nz)
@@ -208,9 +220,10 @@ public:
 
 private:
     /**
-     * @brief 从原点开始BFS构建可到达区域（降维映射）
+     * @brief 从指定种子点开始BFS构建可到达区域
+     * @param seed_point 可选的种子点（世界坐标），nullptr则自动搜索
      */
-    void buildReachableMap();
+    void buildReachableMap(const std::tuple<float, float, float>* seed_point = nullptr);
 
     /**
      * @brief 只在Surface上使用DP算法计算距离场
@@ -227,6 +240,7 @@ private:
     double connectivity_height_threshold_ = 0.6; // 连通性高度阈值
     double surface_clearance_height_ = 0.8; // Surface上方空气高度要求（米）
     int distance_field_max_distance_ = 5;   // 距离场最大距离（网格单位，最大255，使用8 bits存储）
+    int bfs_neighbor_distance_ = 2;         // BFS邻域搜索距离（网格单位，用于稀疏点云）
 
     // 体素网格数据（直接索引形式，用于构建阶段和路径验证）
     std::vector<bool> voxel_array_;        // 体素占据状态（扁平化存储）

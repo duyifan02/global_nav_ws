@@ -5,3 +5,6 @@ bool snap_to_surface
 bool success
 string message
 nav_msgs/Path path
+float64 planning_time_ms
+int64 expanded_nodes
+int64 memory_usage_bytes

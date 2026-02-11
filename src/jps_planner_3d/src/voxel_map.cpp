@@ -25,13 +25,13 @@ VoxelMap::~VoxelMap()
 }
 
 bool VoxelMap::updateFromPoints(const std::vector<std::tuple<float, float, float>>& occupied_voxels,
-                                double resolution)
+                                double resolution,
+                                const std::tuple<float, float, float>* seed_point)
 {
     if (occupied_voxels.empty() || resolution <= 0.0) {
         return false;
     }
 
-    // 清空之前的数据，避免使用旧数据
     valid_surface_voxels_.clear();
     surface_array_.clear();
     distance_map_.clear();
@@ -96,10 +96,9 @@ bool VoxelMap::updateFromPoints(const std::vector<std::tuple<float, float, float
         }
     }
 
-    // 步骤1: 构建可到达区域（使用直接索引的voxel_array_）
-    buildReachableMap();
+    buildReachableMap(seed_point);
     voxel_array_.clear();
-    voxel_array_.shrink_to_fit();  // 释放内存
+    voxel_array_.shrink_to_fit();
 
     return true;
 }
@@ -160,9 +159,8 @@ std::tuple<double, double, double> VoxelMap::gridToWorld(int ix, int iy, int iz)
     return std::make_tuple(x, y, z);
 }
 
-void VoxelMap::buildReachableMap()
+void VoxelMap::buildReachableMap(const std::tuple<float, float, float>* seed_point)
 {
-    // 只检查网格尺寸，不检查 valid_surface_voxels_（避免循环依赖）
     auto [nx, ny, nz] = grid_size_;
     if (nx <= 0 || ny <= 0 || nz <= 0) {
         return;
@@ -173,74 +171,71 @@ void VoxelMap::buildReachableMap()
         return;
     }
     
-    // 清空列表
     valid_surface_voxels_.clear();
     
-    // 辅助数组：标记地面体素是否已访问，防止BFS重复
     std::vector<bool> visited_ground(total_size, false);
     
-    // 1. 寻找起始种子点 (寻找原点附近：被占据 + 上方是空气 的体素)
-    auto origin_grid = worldToGrid(0.0, 0.0, 0.0);
-    int start_ix = std::get<0>(origin_grid);
-    int start_iy = std::get<1>(origin_grid);
-    
-    int search_r = static_cast<int>(5.0 / resolution_);
-    
-    // 计算需要检查的上方体素数量（根据surface_clearance_height_）
-    // 在整个函数中都是常量，提前计算一次即可
     int clearance_cells = static_cast<int>(std::ceil(surface_clearance_height_ / resolution_));
-    // 确保上界至少为0，避免当clearance_cells >= nz时循环不执行
     int max_iz = std::max(0, nz - clearance_cells);
     
     double min_dist_sq = std::numeric_limits<double>::max();
     std::tuple<int, int, int> best_seed = {-1, -1, -1};
 
-    // 首先在原点附近搜索
-    for (int dx = -search_r; dx <= search_r; ++dx) {
-        for (int dy = -search_r; dy <= search_r; ++dy) {
-            int ix = start_ix + dx;
-            int iy = start_iy + dy;
-            
-            if (ix < 0 || ix >= nx || iy < 0 || iy >= ny) continue;
-            
-            // 遍历该柱子上的所有体素，寻找符合条件的地面点
-            for (int iz = 0; iz < max_iz; ++iz) {  // 确保上方有足够空间检查
-                // 条件1: 当前体素必须被占据 (Ground)
-                if (!isOccupiedIdx(ix, iy, iz)) continue;
-                
-                // 条件2: 上方clearance_cells个体素都必须是空气 (可通行)
-                bool has_clearance = true;
-                for (int check_z = 1; check_z <= clearance_cells; ++check_z) {
-                    if (isOccupiedIdx(ix, iy, iz + check_z)) {
-                        has_clearance = false;
-                        break;
+    // 如果提供了种子点，优先使用
+    if (seed_point != nullptr) {
+        auto [sx, sy, sz] = *seed_point;
+        auto [seed_ix, seed_iy, seed_iz] = worldToGrid(sx, sy, sz);
+        
+        // 在种子点附近搜索有效的地面体素
+        int search_r = static_cast<int>(3.0 / resolution_);
+        
+        for (int dx = -search_r; dx <= search_r; ++dx) {
+            for (int dy = -search_r; dy <= search_r; ++dy) {
+                for (int dz = -search_r; dz <= search_r; ++dz) {
+                    int ix = seed_ix + dx;
+                    int iy = seed_iy + dy;
+                    int iz = seed_iz + dz;
+                    
+                    if (!isValidIdx(ix, iy, iz) || iz >= max_iz) continue;
+                    if (!isOccupiedIdx(ix, iy, iz)) continue;
+                    
+                    bool has_clearance = true;
+                    for (int check_z = 1; check_z <= clearance_cells; ++check_z) {
+                        if (isOccupiedIdx(ix, iy, iz + check_z)) {
+                            has_clearance = false;
+                            break;
+                        }
                     }
-                }
-                if (!has_clearance) continue;
-
-                // 计算距离原点的距离
-                auto [wx, wy, wz] = gridToWorld(ix, iy, iz);
-                double d2 = wx*wx + wy*wy + wz*wz;
-                
-                if (d2 < min_dist_sq) {
-                    min_dist_sq = d2;
-                    best_seed = {ix, iy, iz};
+                    if (!has_clearance) continue;
+                    
+                    double d2 = dx*dx + dy*dy + dz*dz;
+                    if (d2 < min_dist_sq) {
+                        min_dist_sq = d2;
+                        best_seed = {ix, iy, iz};
+                    }
                 }
             }
         }
     }
     
-    // 如果原点附近找不到种子点，扩大搜索范围到整个地图
+    // 如果没有种子点或种子点附近找不到，从原点附近搜索
     if (std::get<0>(best_seed) == -1) {
-        // 在整个地图中搜索符合条件的体素
-        // clearance_cells 和 max_iz 已在上面计算，直接使用
-        for (int ix = 0; ix < nx; ++ix) {
-            for (int iy = 0; iy < ny; ++iy) {
+        auto origin_grid = worldToGrid(0.0, 0.0, 0.0);
+        int start_ix = std::get<0>(origin_grid);
+        int start_iy = std::get<1>(origin_grid);
+        
+        int search_r = static_cast<int>(5.0 / resolution_);
+        
+        for (int dx = -search_r; dx <= search_r; ++dx) {
+            for (int dy = -search_r; dy <= search_r; ++dy) {
+                int ix = start_ix + dx;
+                int iy = start_iy + dy;
+                
+                if (ix < 0 || ix >= nx || iy < 0 || iy >= ny) continue;
+                
                 for (int iz = 0; iz < max_iz; ++iz) {
-                    // 条件1: 当前体素必须被占据 (Ground)
                     if (!isOccupiedIdx(ix, iy, iz)) continue;
                     
-                    // 条件2: 上方clearance_cells个体素都必须是空气 (可通行)
                     bool has_clearance = true;
                     for (int check_z = 1; check_z <= clearance_cells; ++check_z) {
                         if (isOccupiedIdx(ix, iy, iz + check_z)) {
@@ -250,10 +245,35 @@ void VoxelMap::buildReachableMap()
                     }
                     if (!has_clearance) continue;
 
-                    // 找到第一个符合条件的体素就使用
-                    best_seed = {ix, iy, iz};
                     auto [wx, wy, wz] = gridToWorld(ix, iy, iz);
-                    min_dist_sq = wx*wx + wy*wy + wz*wz;
+                    double d2 = wx*wx + wy*wy + wz*wz;
+                    
+                    if (d2 < min_dist_sq) {
+                        min_dist_sq = d2;
+                        best_seed = {ix, iy, iz};
+                    }
+                }
+            }
+        }
+    }
+    
+    // 如果原点附近找不到，全图搜索
+    if (std::get<0>(best_seed) == -1) {
+        for (int ix = 0; ix < nx; ++ix) {
+            for (int iy = 0; iy < ny; ++iy) {
+                for (int iz = 0; iz < max_iz; ++iz) {
+                    if (!isOccupiedIdx(ix, iy, iz)) continue;
+                    
+                    bool has_clearance = true;
+                    for (int check_z = 1; check_z <= clearance_cells; ++check_z) {
+                        if (isOccupiedIdx(ix, iy, iz + check_z)) {
+                            has_clearance = false;
+                            break;
+                        }
+                    }
+                    if (!has_clearance) continue;
+
+                    best_seed = {ix, iy, iz};
                     goto found_seed;
                 }
             }
@@ -261,89 +281,68 @@ void VoxelMap::buildReachableMap()
         found_seed:;
     }
     
-    // 如果仍然找不到种子点，说明地图中没有符合条件的体素
     if (std::get<0>(best_seed) == -1) {
         return;
     }
 
-    // 2. BFS 遍历 (只在上方是空气的地面体素上扩展)
     std::queue<std::tuple<int, int, int>> q;
     
     q.push(best_seed);
     size_t seed_idx = index3DTo1D(std::get<0>(best_seed), std::get<1>(best_seed), std::get<2>(best_seed));
     visited_ground[seed_idx] = true;
     
-    // 种子点已确认上方是空气，直接记录为Surface
     {
         auto [sx, sy, sz] = best_seed;
         valid_surface_voxels_.emplace_back(sx, sy, sz + 1);
     }
     
-    int dirs[8][2] = {
-        {1, 0}, {-1, 0}, {0, 1}, {0, -1},
-        {1, 1}, {1, -1}, {-1, 1}, {-1, -1}
-    };
-    
-    // 允许的台阶高度 (Z轴搜索范围)
     int z_step = static_cast<int>(std::ceil(connectivity_height_threshold_ / resolution_));
-    // clearance_cells 已在上面第441行声明，直接使用
+    int xy_step = bfs_neighbor_distance_;
 
     while (!q.empty()) {
         auto [cx, cy, cz] = q.front();
         q.pop();
         
-        // === 扩展邻居 ===
-        for (auto& d : dirs) {
-            int nx_ix = cx + d[0];
-            int ny_iy = cy + d[1];
-            
-            if (nx_ix < 0 || nx_ix >= nx || ny_iy < 0 || ny_iy >= ny) continue;
-            
-            // 在邻居柱子上寻找连接的地面点
-            // 搜索范围: [cz - z_step, cz + z_step]
-            // 注意: max_z 限制为 nz - clearance_cells，确保上方有足够空间检查（与种子搜索保持一致）
-            // 使用 std::max(0, ...) 避免当 clearance_cells >= nz 时 max_z 为负数
-            int min_z = std::max(0, cz - z_step);
-            int max_z = std::min(std::max(0, nz - clearance_cells), cz + z_step);
-            
-            for (int nz_iz = min_z; nz_iz <= max_z; ++nz_iz) {
-                // 1. 必须被占据 (只在实心体素上行走)
-                if (!isOccupiedIdx(nx_ix, ny_iy, nz_iz)) continue;
+        for (int dx = -xy_step; dx <= xy_step; dx += xy_step) {
+            for (int dy = -xy_step; dy <= xy_step; dy += xy_step) {
+                if (dx == 0 && dy == 0) continue;
                 
-                // 2. 检查是否已访问
-                size_t n_idx = index3DTo1D(nx_ix, ny_iy, nz_iz);
-                if (visited_ground[n_idx]) continue;
+                int nx_ix = cx + dx;
+                int ny_iy = cy + dy;
                 
-                // 标记为已访问
-                visited_ground[n_idx] = true;
+                if (nx_ix < 0 || nx_ix >= nx || ny_iy < 0 || ny_iy >= ny) continue;
                 
-                // 3. 检查上方是否有足够的空气高度（根据surface_clearance_height_）
-                bool has_clearance = true;
-                for (int check_z = 1; check_z <= clearance_cells; ++check_z) {
-                    int check_iz = nz_iz + check_z;
-                    if (check_iz >= nz || isOccupiedIdx(nx_ix, ny_iy, check_iz)) {
-                        has_clearance = false;
-                        break;
+                int min_z = std::max(0, cz - z_step);
+                int max_z = std::min(std::max(0, nz - clearance_cells), cz + z_step);
+                
+                for (int nz_iz = min_z; nz_iz <= max_z; ++nz_iz) {
+                    if (!isOccupiedIdx(nx_ix, ny_iy, nz_iz)) continue;
+                    
+                    size_t n_idx = index3DTo1D(nx_ix, ny_iy, nz_iz);
+                    if (visited_ground[n_idx]) continue;
+                    
+                    visited_ground[n_idx] = true;
+                    
+                    bool has_clearance = true;
+                    for (int check_z = 1; check_z <= clearance_cells; ++check_z) {
+                        int check_iz = nz_iz + check_z;
+                        if (check_iz >= nz || isOccupiedIdx(nx_ix, ny_iy, check_iz)) {
+                            has_clearance = false;
+                            break;
+                        }
+                    }
+                    if (has_clearance) {
+                        valid_surface_voxels_.emplace_back(nx_ix, ny_iy, nz_iz + 1);
+                        q.push({nx_ix, ny_iy, nz_iz});
                     }
                 }
-                if (has_clearance) {
-                    // 上方有足够空气 → 这是一个有效的Surface，记录并继续扩展
-                    valid_surface_voxels_.emplace_back(nx_ix, ny_iy, nz_iz + 1);
-                    q.push({nx_ix, ny_iy, nz_iz});
-                }
-                // 如果上方被堵住，只标记为已访问，不加入队列继续扩展
             }
         }
     }
     
-    // BFS 完成后，构建直接索引数组（大空间换小时间，O(1)查询）
-    // 使用已声明的 total_size（已在函数开头计算）
-    
-    // 初始化surface标记数组（全部为false）
     surface_array_.clear();
     surface_array_.resize(total_size, false);
     
-    // 填充surface标记数组
     for (const auto& voxel : valid_surface_voxels_) {
         auto [sx, sy, sz] = voxel;
         if (isValidIdx(sx, sy, sz)) {
