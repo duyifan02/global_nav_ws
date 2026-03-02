@@ -84,7 +84,7 @@ bool VoxelMap::updateFromPoints(const std::vector<std::tuple<float, float, float
 
     size_t total_size = static_cast<size_t>(nx) * static_cast<size_t>(ny) * static_cast<size_t>(nz);
     voxel_array_.clear();
-    voxel_array_.resize(total_size, false);
+    voxel_array_.resize(total_size, 0);
 
     for (const auto& voxel : occupied_voxels) {
         auto [x, y, z] = voxel;
@@ -93,7 +93,7 @@ bool VoxelMap::updateFromPoints(const std::vector<std::tuple<float, float, float
         int iz = static_cast<int>(std::floor((z - std::get<2>(origin_)) / resolution_));
         if (isValidIdx(ix, iy, iz)) {
             size_t idx = index3DTo1D(ix, iy, iz);
-            voxel_array_[idx] = true;
+            voxel_array_[idx] = 1;
         }
     }
 
@@ -351,13 +351,13 @@ void VoxelMap::buildReachableMap(const std::tuple<float, float, float>* seed_poi
     }
     
     surface_array_.clear();
-    surface_array_.resize(total_size, false);
+    surface_array_.resize(total_size, 0);
     
     for (const auto& voxel : valid_surface_voxels_) {
         auto [sx, sy, sz] = voxel;
         if (isValidIdx(sx, sy, sz)) {
             size_t idx = index3DTo1D(sx, sy, sz);
-            surface_array_[idx] = true;
+            surface_array_[idx] = 1;
         }
     }
 }

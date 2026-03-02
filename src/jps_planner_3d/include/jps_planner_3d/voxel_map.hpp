@@ -282,11 +282,11 @@ private:
     // BFS邻域搜索距离固定为1（网格单位）
 
     // 体素网格数据（直接索引形式，用于构建阶段和路径验证）
-    std::vector<bool> voxel_array_;        // 体素占据状态（扁平化存储）
+    std::vector<uint8_t> voxel_array_;        // 体素占据状态（扁平化存储，uint8_t避免vector<bool>内存问题）
     
     // Surface数据（直接索引形式，O(1)查询，优化存储空间）
     std::vector<std::tuple<int, int, int>> valid_surface_voxels_; // 有效Surface体素列表（用于遍历）
-    std::vector<bool> surface_array_;      // Surface标记数组（直接索引，O(1)查询，1 bit per voxel）
+    std::vector<uint8_t> surface_array_;      // Surface标记数组（直接索引，O(1)查询）
     std::unordered_map<size_t, uint8_t> distance_map_; // 距离场映射（只存储surface点，8 bits per value，最大255）
     
     // Surface Graph 优化结构（扁平化邻接表）
