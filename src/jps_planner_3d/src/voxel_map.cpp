@@ -181,7 +181,7 @@ void VoxelMap::buildReachableMap(const std::tuple<float, float, float>* seed_poi
     
     valid_surface_voxels_.clear();
     
-    std::vector<bool> visited_ground(total_size, false);
+    std::vector<uint8_t> visited_ground(total_size, 0);
     
     int clearance_cells = static_cast<int>(std::ceil(surface_clearance_height_ / resolution_));
     int max_iz = std::max(0, nz - clearance_cells);
@@ -305,15 +305,17 @@ void VoxelMap::buildReachableMap(const std::tuple<float, float, float>* seed_poi
     }
     
     int z_step = static_cast<int>(std::ceil(connectivity_height_threshold_ / resolution_));
-    int xy_step = bfs_neighbor_distance_;
+    const int xy_step = 1;  // BFS邻域固定为1（3x3邻域）
 
     while (!q.empty()) {
         auto [cx, cy, cz] = q.front();
         q.pop();
         
-        for (int dx = -xy_step; dx <= xy_step; dx += xy_step) {
-            for (int dy = -xy_step; dy <= xy_step; dy += xy_step) {
+        for (int dx = -xy_step; dx <= xy_step; ++dx) {
+            for (int dy = -xy_step; dy <= xy_step; ++dy) {
                 if (dx == 0 && dy == 0) continue;
+                // 可选: 限制为圆形邻域
+                // if (dx*dx + dy*dy > xy_step*xy_step) continue;
                 
                 int nx_ix = cx + dx;
                 int ny_iy = cy + dy;

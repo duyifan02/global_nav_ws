@@ -30,7 +30,6 @@ public:
     declare_parameter<double>("connectivity_height_threshold", 0.6);
     declare_parameter<double>("surface_clearance_height", 0.8);
     declare_parameter<int>("distance_field_max_distance", 5);
-    declare_parameter<int>("bfs_neighbor_distance", 1);
     declare_parameter<double>("heuristic_weight", 1.0);
     declare_parameter<double>("max_z_change", 0.5);
     declare_parameter<double>("z_penalty_weight", 3.0);
@@ -63,7 +62,6 @@ private:
     voxel_map_->setConnectivityHeightThreshold(get_parameter("connectivity_height_threshold").as_double());
     voxel_map_->setSurfaceClearanceHeight(get_parameter("surface_clearance_height").as_double());
     voxel_map_->setDistanceFieldMaxDistance(get_parameter("distance_field_max_distance").as_int());
-    voxel_map_->setBfsNeighborDistance(get_parameter("bfs_neighbor_distance").as_int());
   }
 
   void rebuildPlanner()
@@ -113,7 +111,6 @@ private:
       voxel_map_->setConnectivityHeightThreshold(get_parameter("connectivity_height_threshold").as_double());
       voxel_map_->setSurfaceClearanceHeight(get_parameter("surface_clearance_height").as_double());
       voxel_map_->setDistanceFieldMaxDistance(get_parameter("distance_field_max_distance").as_int());
-      voxel_map_->setBfsNeighborDistance(get_parameter("bfs_neighbor_distance").as_int());
       voxel_map_->setFreeSpaceMargin(request->free_space_margin);
 
       bool updated = voxel_map_->updateFromPoints(voxels, request->resolution, 

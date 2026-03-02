@@ -27,8 +27,6 @@ public:
      * @param resolution 体素分辨率（米）
      * @param free_space_margin 自由空间缓冲（米），障碍物边界外扩展的自由空间
      * 
-     * @note 构造后需要调用 setConnectivityHeightThreshold(), setSurfaceClearanceHeight(), 
-     *       setDistanceFieldMaxDistance() 来配置 Surface 提取和距离场参数
      */
     VoxelMap(double resolution = 0.2,
              double free_space_margin = 2.0);
@@ -202,14 +200,6 @@ public:
         distance_field_max_distance_ = std::min(max_distance, 255); // 限制最大值为255（uint8_t最大值）
     }
 
-    /**
-     * @brief 设置BFS邻域搜索距离
-     * 
-     * @param distance XY平面上搜索相邻Surface的距离（网格单位）
-     *                 对于稀疏点云（如0.2m间距+0.1m分辨率），设为2
-     *                 对于稠密点云（间距≈分辨率），设为1
-     */
-    void setBfsNeighborDistance(int distance) { bfs_neighbor_distance_ = std::max(1, distance); }
 
     /**
      * @brief 获取网格尺寸
@@ -289,7 +279,7 @@ private:
     double connectivity_height_threshold_ = 0.6; // 连通性高度阈值
     double surface_clearance_height_ = 0.8; // Surface上方空气高度要求（米）
     int distance_field_max_distance_ = 5;   // 距离场最大距离（网格单位，最大255，使用8 bits存储）
-    int bfs_neighbor_distance_ = 2;         // BFS邻域搜索距离（网格单位，用于稀疏点云）
+    // BFS邻域搜索距离固定为1（网格单位）
 
     // 体素网格数据（直接索引形式，用于构建阶段和路径验证）
     std::vector<bool> voxel_array_;        // 体素占据状态（扁平化存储）
