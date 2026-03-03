@@ -185,7 +185,7 @@ private:
       response->planning_time_ms = planning_time_ms;
       response->expanded_nodes = expanded_nodes;
       response->memory_usage_bytes = 0;
-      RCLCPP_WARN(get_logger(), "plan_path failed: %s (%.2f ms) expanded=%d", 
+      RCLCPP_WARN(get_logger(), "plan_path failed: %s (%.2f ms) expanded=%ld",
                   response->message.c_str(), planning_time_ms, expanded_nodes);
       return;
     }
