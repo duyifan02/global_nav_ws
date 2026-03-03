@@ -1,214 +1,241 @@
-# 3D Planner Benchmark 使用指南
+# Benchmark 使用指南
 
-## 概述
+本工具支持两套独立工作流：
 
-本工具用于对比测试 JPS 3D、PCT、3D2M 等路径规划算法的性能。
-
-**核心指标（纯算法性能，不含ROS通信开销）**:
-- 规划时间 (planning_time_ms)
-- 扩展节点数 (expanded_nodes)
-- 路径长度 (path_length_m)
-- 成功率 (success_rate)
+| 工作流 | 场景来源 | 用途 |
+|--------|----------|------|
+| **Workflow A**: PCT 基线对比 | PCD 点云文件 (Spiral/Building/Plaza) | 与 PCT/3D2M 的定量对比测试 |
+| **Workflow B**: MP3D 交互式会话 | Matterport3D OBJ 网格文件 | 自定义场景性能统计与截图 |
 
 ---
 
-## 快速开始：RViz2 交互式 Benchmark（推荐）
-
-使用 RViz2 手动选择起点/终点，精确控制测试条件。
-
-### 1. 启动 JPS 规划节点
+## 环境准备（首次）
 
 ```bash
-# 终端 1
+# 编译工作空间
 source /opt/ros/jazzy/setup.bash
-source ~/project/planner_benchmark/global_nav_ws/install/setup.bash
+cd /path/to/global_nav_ws
+colcon build --symlink-install
+
+# 以后每次开新终端都需要 source
+source /opt/ros/jazzy/setup.bash
+source /path/to/global_nav_ws/install/setup.bash
+```
+
+---
+
+## Workflow A：PCT 基线对比（PCD 场景）
+
+适用场景：Spiral (P1)、Building (P2)、Plaza (P3)，对应论文 Section IV-B。
+
+### 场景参数
+
+| 场景 | PCD 文件 | 分辨率 | 起点 | 终点 |
+|------|---------|--------|------|------|
+| `spiral` | `src/spiral0.3_2.pcd` | 0.20 m | (−16, −6, 0) | (−26, −5, 0) |
+| `building` | `src/building2_9.pcd` | 0.10 m | (5, 5, 0) | (−6, −1, 0) |
+| `plaza` | `src/plaza3_10.pcd` | 0.10 m | (0, 0, 0) | (23, 10, 0) |
+
+### A-1：RViz2 交互式测试（推荐）
+
+**终端 1 — 启动 JPS 节点**
+```bash
+source /opt/ros/jazzy/setup.bash
+source /path/to/global_nav_ws/install/setup.bash
 ros2 run jps_planner_3d jps_planner_node
 ```
 
-### 2. 启动 RViz2
-
+**终端 2 — 启动 RViz2**
 ```bash
-# 终端 2
 source /opt/ros/jazzy/setup.bash
-source ~/project/planner_benchmark/global_nav_ws/install/setup.bash
+source /path/to/global_nav_ws/install/setup.bash
 rviz2
 ```
 
-RViz2 配置：
-1. **Fixed Frame**: `map`
-2. **Add** → PointCloud2 → Topic: `/benchmark/pointcloud`
-3. **Add** → Path → Topic: `/benchmark/path`
-4. **Add** → MarkerArray → Topic: `/benchmark/markers`
-5. 工具栏选择 **Publish Point** 工具
+RViz2 配置（每次启动后设置一次）：
+1. `Fixed Frame` → `map`
+2. **Add** → PointCloud2 → Topic: `/benchmark/pointcloud`（原始点云，白色）
+3. **Add** → PointCloud2 → Topic: `/benchmark/surface`（可通行区域，绿色）
+4. **Add** → Path → Topic: `/benchmark/path`
+5. **Add** → MarkerArray → Topic: `/benchmark/markers`
+6. 工具栏选择 **Publish Point** 工具（快捷键 `P`）
 
-### 3. 运行 Benchmark
-
+**终端 3 — 运行 benchmark**
 ```bash
-# 终端 3
 source /opt/ros/jazzy/setup.bash
-source ~/project/planner_benchmark/global_nav_ws/install/setup.bash
-cd ~/project/planner_benchmark/benchmark/tools
-/usr/bin/python3.12  rviz_benchmark.py --scene building --trials 1
+source /path/to/global_nav_ws/install/setup.bash
+cd /path/to/global_nav_ws/tools/benchmark/tools
+
+# Spiral (r=0.2m)
+python3 rviz_benchmark.py --scene spiral --resolution 0.2 --trials 50
+
+# Building (r=0.1m)
+python3 rviz_benchmark.py --scene building --resolution 0.1 --trials 50
+
+# Plaza (r=0.1m)
+python3 rviz_benchmark.py --scene plaza --resolution 0.1 --trials 50
 ```
 
-### 4. 操作流程
+**操作流程（Workflow A）：**
+1. 点云自动加载并显示（白色）
+2. 用 **Publish Point** 点击选择**建图种子点**（蓝色球）— 确定可行走区域
+3. 等待绿色 surface 点云出现（建图完成）
+4. 点击选择**导航起点**（绿色球）— 必须选在绿色 surface 上
+5. 点击选择**导航终点**（红色球）— 必须选在绿色 surface 上
+6. 自动运行 N 次规划，实时打印统计
+7. 继续点击开始新一组测试；`Ctrl+C` 退出并保存结果
 
-1. 点云会自动显示在 RViz2 中
-2. 用 **Publish Point** 工具点击选择 **起点**（绿色球标记）
-3. 再点击选择 **终点**（红色球标记）
-4. 自动运行 N 次规划测试，实时显示结果
-5. 继续点击开始新一轮测试
-6. **Ctrl+C** 退出并保存所有结果
-
-### 命令参数
-
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `--scene` | 场景名称 (spiral, building, plaza) | spiral |
-| `--resolution` | 体素分辨率 (m) | 0.1 |
-| `--trials` | 每组起终点的测试次数 | 100 |
-
-### 输出示例
-
-```
-运行 100 次规划测试
-起点: [-20.5, -10.2, 5.0]
-终点: [-35.2, -15.8, 12.0]
-直线距离: 18.52m
-============================================================
-  [  1/100] ✓ 2.34ms | 25.67m | 1523 nodes
-  [  2/100] ✓ 2.28ms | 25.67m | 1523 nodes
-  ...
-
-本轮统计 (纯算法耗时，不含ROS通信):
-  成功率: 100.0%
-  规划时间: 2.31 ± 0.12 ms
-            min=2.15, max=2.89 ms
-  路径长度: 25.67 ± 0.00 m
-  扩展节点: 1523 ± 0
-```
-
----
-
-## 自动化 Benchmark（批量测试）
-
-适用于预定义起终点的批量测试。
+### A-2：自动化批量测试
 
 ```bash
-cd benchmark
-python run_benchmark.py --planners JPS --scenes spiral --trials 50
+cd /path/to/global_nav_ws/tools/benchmark
+python3 run_benchmark.py --planners JPS --scenes spiral --trials 50
+python3 run_benchmark.py --planners JPS PCT --scenes all --trials 50
 ```
-
-### 命令参数
 
 | 参数 | 选项 | 默认值 |
 |------|------|--------|
-| `--planners` | PCT, JPS, 3D2M, all | PCT, JPS |
-| `--scenes` | spiral, building, plaza, all | spiral |
-| `--trials` | 任意整数 | 50 |
-| `--resolution` | 体素分辨率(m) | 0.1 |
-| `--output` | 结果目录 | ./results |
+| `--planners` | `JPS`, `PCT`, `3D2M`, `all` | `JPS` |
+| `--scenes` | `spiral`, `building`, `plaza`, `all` | `spiral` |
+| `--trials` | 整数 | `50` |
+| `--output` | 目录路径 | `./results` |
 
 ---
 
-## 各规划器运行前提
+## Workflow B：MP3D OBJ 交互式会话
 
-### JPS 3D (ROS2 Jazzy)
+适用场景：Matterport3D 场景 S1–S5，直接加载 `.obj` 网格文件，无需 PCD 文件。
+
+**特点**：
+- `obj_mesh_loader` 节点自动完成：OBJ 解析 → 体素化 → 调用 `/set_voxel_map`
+- `rviz_benchmark.py --preloaded` 直接连接已加载的地图，跳过种子点选择步骤
+
+### B-1：启动（launch 一键启动 JPS + OBJ 加载）
 
 ```bash
-# 编译（首次或修改后）
 source /opt/ros/jazzy/setup.bash
-cd ~/project/planner_benchmark/global_nav_ws
-colcon build --symlink-install
+source /path/to/global_nav_ws/install/setup.bash
 
-# 运行节点
-source install/setup.bash
-ros2 run jps_planner_3d jps_planner_node
+# 基本用法（r=0.1m，自动居中）
+ros2 launch occmap_tools load_obj_mesh.launch.py \
+    obj_path:=/path/to/scene.obj \
+    resolution:=0.1
+
+# 大场景（点数可能超过 500 万，开启截断）
+ros2 launch occmap_tools load_obj_mesh.launch.py \
+    obj_path:=/path/to/warehouse.obj \
+    resolution:=0.1 \
+    max_service_points:=5000000 \
+    truncate_service_points:=true
 ```
 
-**服务接口**:
-- `/set_voxel_map` (SetVoxelMap) - 设置体素地图
-- `/plan_path` (PlanPath) - 规划路径，返回纯算法耗时
+> **注意**：`launch` 会同时启动 `jps_planner_node` 和 `obj_mesh_loader`，无需单独启动 JPS 节点。
 
-### PCT
+Launch 参数说明：
 
-需要预生成 tomogram 文件：
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `obj_path` | OBJ 文件路径（必填） | — |
+| `resolution` | 体素分辨率 (m) | `0.05` |
+| `auto_center` | 自动将网格居中到原点 | `true` |
+| `free_space_margin` | 自由空间边距 (m) | `2.0` |
+| `max_service_points` | 发送到服务的最大点数 | `5000000` |
+| `truncate_service_points` | 超出时截断（否则报错退出） | `true` |
+
+等待终端输出：
+```
+[obj_mesh_loader]: set_voxel_map success: ...
+```
+说明地图已加载完成，可以启动 benchmark 工具。
+
+### B-2：启动 RViz2
+
 ```bash
-# 检查文件是否存在
-ls PCT_planner/rsc/tomogram/{scene}.pickle
-
-# 如不存在，生成
-cd PCT_planner/tomography/scripts
-python tomography.py --scene Spiral
+# 新终端
+source /opt/ros/jazzy/setup.bash
+source /path/to/global_nav_ws/install/setup.bash
+rviz2
 ```
 
-### 3D2M (ROS1)
+RViz2 配置（与 Workflow A 相同，但不需要 `/benchmark/pointcloud`）：
+1. `Fixed Frame` → `map`
+2. **Add** → PointCloud2 → Topic: `/benchmark/surface`（可通行区域，绿色）
+3. **Add** → PointCloud2 → Topic: `occupied_voxels`（OBJ 体素，可选）
+4. **Add** → Path → Topic: `/benchmark/path`
+5. **Add** → MarkerArray → Topic: `/benchmark/markers`
+6. 工具栏选择 **Publish Point** 工具
 
-需单独运行，不支持 Python 直接调用：
+### B-3：运行 benchmark（--preloaded 模式）
+
 ```bash
-# 1. 启用 benchmark 模式
-vim 3D2M-planner/planner/src/planner_manager/src/planner_manager.cpp
-# 取消注释: #define BENCHMARKTIME
+# 新终端
+source /opt/ros/jazzy/setup.bash
+source /path/to/global_nav_ws/install/setup.bash
+cd /path/to/global_nav_ws/tools/benchmark/tools
 
-# 2. 编译运行
-cd 3D2M-planner/planner && catkin_make
-source devel/setup.bash
-roslaunch planner_manager scene1.launch
+# scene 参数仅用于结果文件命名，无功能影响
+python3 rviz_benchmark.py --preloaded --scene s1 --resolution 0.1 --trials 50
 ```
+
+**操作流程（Workflow B，比 A 少一步）：**
+1. 绿色 surface 点云自动显示（从 JPS 节点拉取）
+2. 点击选择**导航起点**（绿色球）— 选在绿色 surface 上
+3. 点击选择**导航终点**（红色球）— 选在绿色 surface 上
+4. 自动运行 N 次规划，实时打印统计
+5. `Ctrl+C` 退出并保存结果
+
+---
+
+## 性能指标说明
+
+| 指标 | 符号 | 说明 |
+|------|------|------|
+| 预处理时间 | Tp | PCD→体素化耗时（仅 Workflow A） |
+| 可通行性估计时间 | Te | buildReachableMap + 距离场构建耗时 |
+| 路径搜索时间 | Ts | A* 搜索耗时（C++ 端测量，不含 ROS 通信） |
+| 总导航时间 | Tall | Tp + Te + Ts + To |
+| 路径长度 | — | 三维欧氏路径长度 (m) |
+| 扩展节点数 | Ns | A* 扩展的图节点数 |
+| 内存使用 | Size | 体素数（字节估算） |
+
+> `planning_time_ms`（即 Ts）由 C++ 节点内部计时，**不包含 ROS2 服务调用开销**。
 
 ---
 
 ## 输出文件
 
-### RViz2 Benchmark 结果
+结果保存在 `benchmark/results/` 目录：
 
-保存在 `benchmark/results/` 目录：
 ```
-jps_benchmark_{scene}_{timestamp}.json
+results/
+└── jps_benchmark_{scene}_{timestamp}.json
 ```
 
 JSON 结构：
 ```json
 {
   "planner": "JPS_3D",
-  "timestamp": "20260210_123456",
-  "map_info": {
-    "scene": "spiral",
-    "resolution": 0.1,
-    "num_voxels": 231884,
-    "bounds_min": [-61.4, -32.2, -0.6],
-    "bounds_max": [20.2, 8.6, 22.8]
-  },
+  "timestamp": "20260210_143022",
+  "map_info": { "scene": "spiral", "resolution": 0.2, "num_voxels": 231884 },
+  "config": { "trials_per_run": 50, "snap_to_surface": true },
   "cumulative_stats": {
     "total_runs": 5,
-    "total_trials": 500,
-    "success_rate": 0.98,
-    "planning_time_ms": {
-      "mean": 2.34,
-      "std": 0.45,
-      "min": 1.82,
-      "max": 5.67,
-      "median": 2.21
-    },
-    "path_length_m": {...},
-    "expanded_nodes": {...}
+    "total_trials": 250,
+    "success_rate": 1.0,
+    "planning_time_ms": { "mean": 47.3, "std": 3.1, "min": 41.2, "max": 58.7, "median": 46.9 },
+    "path_length_m": { "mean": 28.4, "std": 0.0 },
+    "expanded_nodes": { "mean": 1842, "std": 0 }
   },
   "runs": [
     {
-      "start": [-20.5, -10.2, 5.0],
-      "goal": [-35.2, -15.8, 12.0],
-      "euclidean_distance": 18.52,
-      "stats": {...},
-      "trials": [...]
+      "start": [-16.0, -6.0, 2.8],
+      "goal": [-26.0, -5.0, 2.8],
+      "euclidean_distance": 10.05,
+      "trials": [ { "success": true, "planning_time_ms": 47.3, ... } ]
     }
   ]
 }
 ```
-
-### 自动化 Benchmark 结果
-
-- `benchmark_YYYYMMDD_HHMMSS.json` — 原始数据
-- `{planner}_{scene}_*.csv` — 分项 CSV
 
 ---
 
@@ -216,26 +243,60 @@ JSON 结构：
 
 ```
 benchmark/
-├── USAGE.md                  # 本文档
-├── run_benchmark.py          # 自动化benchmark主入口
-├── config.py                 # 场景/参数配置
-├── metrics.py                # 指标计算
+├── USAGE.md                   # 本文档
+├── run_benchmark.py           # 自动化批量测试入口
+├── config.py                  # 场景参数（PCD 路径、起终点、分辨率）
+├── metrics.py                 # 指标计算工具
 ├── converters/
-│   └── pcd_to_voxel.py       # PCD→体素转换（支持ASCII/Binary）
+│   └── pcd_to_voxel.py        # PCD → 体素转换（ASCII/Binary PCD）
 ├── planners/
-│   ├── pct_wrapper.py        # PCT封装
-│   ├── jps_wrapper.py        # JPS封装 (ROS2)
-│   └── d2m_wrapper.py        # 3D2M封装 (ROS1)
+│   ├── pct_wrapper.py         # PCT 封装（ROS1）
+│   ├── jps_wrapper.py         # JPS 封装（ROS2 服务客户端）
+│   └── d2m_wrapper.py         # 3D2M 封装（ROS1）
 ├── tools/
-│   └── rviz_benchmark.py     # RViz2交互式benchmark工具
-└── results/                  # 输出结果目录
+│   ├── rviz_benchmark.py      # RViz2 交互式工具（支持 --preloaded）
+│   ├── select_endpoints.py    # 端点选择工具
+│   └── debug_conversion.py    # 体素转换调试工具
+├── src/
+│   ├── spiral0.3_2.pcd        # P1 Spiral 点云
+│   ├── building2_9.pcd        # P2 Building 点云
+│   └── plaza3_10.pcd          # P3 Plaza 点云
+└── results/                   # 输出结果目录（自动创建）
+```
+
+对应 ROS2 工作空间节点：
+
+```
+global_nav_ws/src/
+├── jps_planner_3d/            # JPS A* 规划器（/set_voxel_map, /plan_path 服务）
+├── nav_interfaces/            # 服务定义（SetVoxelMap, PlanPath, GetDistanceField）
+└── occmap_tools/
+    ├── occmap_tools/obj_mesh_loader.py   # OBJ→体素→调用 /set_voxel_map
+    └── launch/load_obj_mesh.launch.py    # 一键启动（JPS + OBJ 加载）
 ```
 
 ---
 
-## 注意事项
+## 常见问题
 
-1. **环境要求**: ROS2 Jazzy + Python 3.12（系统Python，不要用conda）
-2. **性能指标**: `planning_time_ms` 是C++端测量的纯算法耗时，不含ROS服务调用开销
-3. **选点技巧**: 选择点云表面附近的点，`snap_to_surface=True` 会自动吸附到最近体素
-4. **多次测试**: 同一起终点多次测试用于统计稳定性（JPS是确定性算法，结果应一致）
+**Q: `rviz_benchmark.py` 启动后提示服务不可用**
+- 确保已启动 JPS 节点（Workflow A）或 launch 文件（Workflow B）
+- 检查 `source install/setup.bash` 是否在正确的工作空间执行
+
+**Q: 规划失败 "Planning was cancelled"**
+- 起点或终点不在可通行 surface 上
+- 将 `snap_to_surface=True`（默认）后仍失败，说明点选在距 surface 过远处
+- 在 RViz2 中将点选在**绿色 surface 点云**上
+
+**Q: Workflow B 的 OBJ 加载很慢**
+- 大型 OBJ 文件体素化耗时较长（体素数 > 100 万时约需 10–60s）
+- 适当增大 `resolution`（如 0.15 m）可显著减少体素数
+- 一次加载后 JPS 节点保持地图，无需重复加载
+
+**Q: 结果文件里 Tp=0**
+- Preloaded 模式（Workflow B）下 `occupied_list` 来自外部节点，Tp 不记录为 0 是正常的
+
+**Q: 注意事项**
+- 使用系统 Python 3.12，**不要使用 conda** 环境（ROS2 依赖系统 Python）
+- `planning_time_ms` 是 C++ 端测量的纯算法时间，不含 ROS 服务通信开销
+- JPS 是确定性算法：同一起终点多次测试的路径和扩展节点数完全一致，规划时间的微小波动来自 CPU 调度

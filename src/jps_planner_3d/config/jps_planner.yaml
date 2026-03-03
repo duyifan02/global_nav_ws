@@ -3,24 +3,21 @@ jps_planner_node:
     # ========== 坐标系 ==========
     frame_id: "map"
 
-    # ========== A* / JPS 规划参数 ==========
-    # 启发式权重 (1.0=最优路径, >1=加速搜索但可能非最优)
+    # ========== A* 规划参数（对应论文Section III-C）==========
+    # 启发式权重 ε=1.0 → 最优A*（论文实验设置）
     heuristic_weight: 1.0
-    # 单步最大 Z 轴变化 (米)，用于台阶/斜坡约束
-    max_z_change: 0.5
-    # Z 轴变化超过阈值后的惩罚权重
-    z_penalty_weight: 3.0
-    # 贴墙惩罚权重，基于距离场计算，0 表示禁用
-    potential_weight: 100.0
+    # 上坡惩罚权重 ω_↑（论文: 2.0）
+    w_up: 2.0
+    # 下坡惩罚权重 ω_↓（论文: 1.0，需满足 ω_↓ ≤ ω_↑ 保证启发式可容许）
+    w_down: 1.0
+    # 贴墙惩罚权重 ω_obs（论文: 0.5）
+    # 代价项: ω_obs·r/(D(s')+1)，D小(靠近墙)代价大，鼓励路径走空旷区域
+    w_obs: 0.5
 
-    # ========== VoxelMap / Surface 参数 ==========
-    # BFS 连通性高度阈值 (米)，控制可跨越的台阶高度
-    connectivity_height_threshold: 0.6
-    # Surface 上方需要的空气高度 (米)，确保通行空间
-    surface_clearance_height: 0.8
-    # 距离场最大距离 (网格单位，最大255)，用于贴墙惩罚范围
-    distance_field_max_distance: 5
-
-    # ========== 服务名称 (可选覆盖) ==========
-    # set_map_service: "set_voxel_map"
-    # plan_service: "plan_path"
+    # ========== VoxelMap / Surface 提取参数（对应论文Section III-B）==========
+    # BFS连通性高度阈值 T_conn（论文: 0.3m，可跨越的台阶最大高度）
+    connectivity_height_threshold: 0.3
+    # Surface上方净空高度 H_clear（论文: 1.6m，机器人高度）
+    surface_clearance_height: 1.6
+    # 距离场最大计算距离（网格单位，最大255），影响clearance代价范围
+    distance_field_max_distance: 10

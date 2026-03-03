@@ -200,33 +200,35 @@ class VoxelMap:
         return tuple(dim)
 
 
-# PCD文件路径映射
+# benchmark/src/ 目录下的PCD文件（路径相对于 benchmark/ 根目录）
+_BENCHMARK_DIR = Path(__file__).parent.parent
+
 PCD_PATHS = {
-    "spiral": "3D2M-planner/planner/src/read_pcd/PCDFiles/spiral0.3_2.pcd",
-    "building": "PCT_planner/rsc/pcd/building2_9.pcd",
-    "plaza": "PCT_planner/rsc/pcd/plaza3_10.pcd",
+    "spiral": "src/spiral0.3_2.pcd",
+    "building": "src/building2_9.pcd",
+    "plaza": "src/plaza3_10.pcd",
 }
 
 
 def get_voxel_map(scene_name: str, resolution: float, project_root: str = None) -> VoxelMap:
     """
     获取指定场景的体素地图
-    
+
     Args:
         scene_name: 场景名 (spiral/building/plaza)
         resolution: 体素分辨率
-        project_root: 项目根目录
-        
+        project_root: benchmark根目录，默认自动推断
+
     Returns:
         VoxelMap对象
     """
     if project_root is None:
-        project_root = str(Path(__file__).parent.parent.parent)
-    
+        project_root = str(_BENCHMARK_DIR)
+
     pcd_rel_path = PCD_PATHS.get(scene_name.lower())
     if pcd_rel_path is None:
         raise ValueError(f"Unknown scene: {scene_name}")
-    
+
     pcd_path = str(Path(project_root) / pcd_rel_path)
     return VoxelMap(pcd_path, resolution)
 

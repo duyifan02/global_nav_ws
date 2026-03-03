@@ -101,8 +101,11 @@ bool VoxelMap::updateFromPoints(const std::vector<std::tuple<float, float, float
     buildReachableMap(seed_point);
     auto t_build_end = std::chrono::high_resolution_clock::now();
     traversability_time_ms_ = std::chrono::duration<double, std::milli>(t_build_end - t_build_start).count();
-    
-    // 构建 Surface Graph 用于A*搜索加速
+
+    // 计算距离场（需要 voxel_array_ 和 surface_array_，必须在 buildSurfaceGraph 前调用）
+    computeDistanceFieldOnSurface();
+
+    // 构建 Surface Graph 用于A*搜索加速（使用 distance_map_ 填充节点距离）
     buildSurfaceGraph();
     
     voxel_array_.clear();
@@ -305,46 +308,44 @@ void VoxelMap::buildReachableMap(const std::tuple<float, float, float>* seed_poi
     }
     
     int z_step = static_cast<int>(std::ceil(connectivity_height_threshold_ / resolution_));
-    const int xy_step = 1;  // BFS邻域固定为1（3x3邻域）
+    // 论文公式(3): Z连通邻域要求 ‖Δc_xy‖₁ = 1，即严格4连通（不含对角线）
+    constexpr int dirs4[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
 
     while (!q.empty()) {
         auto [cx, cy, cz] = q.front();
         q.pop();
-        
-        for (int dx = -xy_step; dx <= xy_step; ++dx) {
-            for (int dy = -xy_step; dy <= xy_step; ++dy) {
-                if (dx == 0 && dy == 0) continue;
-                // 可选: 限制为圆形邻域
-                // if (dx*dx + dy*dy > xy_step*xy_step) continue;
-                
-                int nx_ix = cx + dx;
-                int ny_iy = cy + dy;
-                
-                if (nx_ix < 0 || nx_ix >= nx || ny_iy < 0 || ny_iy >= ny) continue;
-                
-                int min_z = std::max(0, cz - z_step);
-                int max_z = std::min(std::max(0, nz - clearance_cells), cz + z_step);
-                
-                for (int nz_iz = min_z; nz_iz <= max_z; ++nz_iz) {
-                    if (!isOccupiedIdx(nx_ix, ny_iy, nz_iz)) continue;
-                    
-                    size_t n_idx = index3DTo1D(nx_ix, ny_iy, nz_iz);
-                    if (visited_ground[n_idx]) continue;
-                    
-                    visited_ground[n_idx] = true;
-                    
-                    bool has_clearance = true;
-                    for (int check_z = 1; check_z <= clearance_cells; ++check_z) {
-                        int check_iz = nz_iz + check_z;
-                        if (check_iz >= nz || isOccupiedIdx(nx_ix, ny_iy, check_iz)) {
-                            has_clearance = false;
-                            break;
-                        }
+
+        for (int di = 0; di < 4; ++di) {
+            int dx = dirs4[di][0];
+            int dy = dirs4[di][1];
+
+            int nx_ix = cx + dx;
+            int ny_iy = cy + dy;
+
+            if (nx_ix < 0 || nx_ix >= nx || ny_iy < 0 || ny_iy >= ny) continue;
+
+            int min_z = std::max(0, cz - z_step);
+            int max_z = std::min(std::max(0, nz - clearance_cells), cz + z_step);
+
+            for (int nz_iz = min_z; nz_iz <= max_z; ++nz_iz) {
+                if (!isOccupiedIdx(nx_ix, ny_iy, nz_iz)) continue;
+
+                size_t n_idx = index3DTo1D(nx_ix, ny_iy, nz_iz);
+                if (visited_ground[n_idx]) continue;
+
+                visited_ground[n_idx] = true;
+
+                bool has_clearance = true;
+                for (int check_z = 1; check_z <= clearance_cells; ++check_z) {
+                    int check_iz = nz_iz + check_z;
+                    if (check_iz >= nz || isOccupiedIdx(nx_ix, ny_iy, check_iz)) {
+                        has_clearance = false;
+                        break;
                     }
-                    if (has_clearance) {
-                        valid_surface_voxels_.emplace_back(nx_ix, ny_iy, nz_iz + 1);
-                        q.push({nx_ix, ny_iy, nz_iz});
-                    }
+                }
+                if (has_clearance) {
+                    valid_surface_voxels_.emplace_back(nx_ix, ny_iy, nz_iz + 1);
+                    q.push({nx_ix, ny_iy, nz_iz});
                 }
             }
         }
@@ -478,45 +479,41 @@ void VoxelMap::computeDistanceFieldOnSurface()
     // 检查每个surface点的邻域是否有障碍物
     // 如果邻域有障碍物，距离=1；否则距离=INF
     
+    // 论文公式(6-7): 有效障碍方向定义用4连通（与 ‖Δc_xy‖₁=1 一致）
+    constexpr int dirs4[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
+
     for (const auto& voxel : valid_surface_voxels_) {
         auto [sx, sy, sz] = voxel;
         if (!isValidIdx(sx, sy, sz)) continue;
 
         size_t idx = index3DTo1D(sx, sy, sz);
 
-        // 检查XY平面8邻域是否为真正的障碍物
+        // 检查4个基本方向是否为有效障碍：该方向无Z连通邻居且有占据体素
         bool near_obstacle = false;
-        for (int dx = -1; dx <= 1 && !near_obstacle; ++dx) {
-            for (int dy = -1; dy <= 1 && !near_obstacle; ++dy) {
-                if (dx == 0 && dy == 0) continue;
+        for (int di = 0; di < 4 && !near_obstacle; ++di) {
+            int nx_coord = sx + dirs4[di][0];
+            int ny_coord = sy + dirs4[di][1];
 
-                int nx_coord = sx + dx;
-                int ny_coord = sy + dy;
-
-                // 先检查这个方向是否有可通行的surface（在Z范围内）
-                // 这样可以正确处理下台阶、斜坡等场景
-                bool has_passable_surface = false;
-                for (int dz = -z_search; dz <= z_search; ++dz) {
-                    int check_z = sz + dz;
-                    if (isSurfaceValid(nx_coord, ny_coord, check_z)) {
-                        has_passable_surface = true;
-                        break;
-                    }
+            // 先检查该方向是否有Z连通可达的surface点
+            bool has_passable_surface = false;
+            for (int dz = -z_search; dz <= z_search; ++dz) {
+                if (isSurfaceValid(nx_coord, ny_coord, sz + dz)) {
+                    has_passable_surface = true;
+                    break;
                 }
+            }
 
-                // 只有当该方向没有可通行surface 且 有实体障碍物时，才认为是障碍物
-                if (!has_passable_surface) {
-                    // 检查同层和上层是否有障碍物（墙壁检测）
-                    if (isOccupiedIdx(nx_coord, ny_coord, sz) ||
-                        isOccupiedIdx(nx_coord, ny_coord, sz + 1)) {
-                        near_obstacle = true;
-                    }
+            // 论文公式(6): 无Z连通邻居且该方向有占据体素 → 有效障碍
+            if (!has_passable_surface) {
+                if (isOccupiedIdx(nx_coord, ny_coord, sz) ||
+                    isOccupiedIdx(nx_coord, ny_coord, sz + 1)) {
+                    near_obstacle = true;
                 }
             }
         }
 
-        // 初始化距离值
-        distance_map_[idx] = near_obstacle ? 1 : INF;
+        // 论文算法1初始化: 边界处D=0，否则D=∞
+        distance_map_[idx] = near_obstacle ? 0 : INF;
     }
     
     // ========== Step 2: 两遍DP扫描（优化版本）==========
@@ -668,41 +665,38 @@ void VoxelMap::buildSurfaceGraph()
         coord_to_surface_idx_[grid_idx] = static_cast<int>(i);
     }
     
+    // 论文公式(3): 4连通邻域，‖Δc_xy‖₁ = 1
+    constexpr int dirs4[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
+
     // Step 2: 第一遍 - 统计每个节点的邻居数量
     std::vector<int> neighbor_counts(n, 0);
-    
+
     for (size_t i = 0; i < n; ++i) {
         const auto& node = surface_graph_[i];
-        
-        for (int dx = -1; dx <= 1; ++dx) {
-            for (int dy = -1; dy <= 1; ++dy) {
-                if (dx == 0 && dy == 0) continue;
-                
-                int nx = node.x + dx;
-                int ny = node.y + dy;
-                
-                // 优先检查同层
-                int neighbor_idx = coordToSurfaceIdx(nx, ny, node.z);
-                if (neighbor_idx >= 0) {
-                    neighbor_counts[i]++;
-                    continue;
-                }
-                
-                // 螺旋搜索 Z 方向
-                for (int dz_abs = 1; dz_abs <= z_search; ++dz_abs) {
-                    double height_diff = dz_abs * resolution_;
-                    if (height_diff > connectivity_height_threshold_) break;
-                    
-                    for (int sign : {-1, 1}) {
-                        int nz = node.z + sign * dz_abs;
-                        neighbor_idx = coordToSurfaceIdx(nx, ny, nz);
-                        if (neighbor_idx >= 0) {
-                            neighbor_counts[i]++;
-                            goto next_neighbor;
-                        }
+
+        for (int di = 0; di < 4; ++di) {
+            int nx = node.x + dirs4[di][0];
+            int ny = node.y + dirs4[di][1];
+
+            // 优先检查同层
+            int neighbor_idx = coordToSurfaceIdx(nx, ny, node.z);
+            if (neighbor_idx >= 0) {
+                neighbor_counts[i]++;
+                continue;
+            }
+
+            // 搜索Z方向（Z连通：|Δz| ≤ k）
+            bool found = false;
+            for (int dz_abs = 1; dz_abs <= z_search && !found; ++dz_abs) {
+                for (int sign : {-1, 1}) {
+                    int nz = node.z + sign * dz_abs;
+                    neighbor_idx = coordToSurfaceIdx(nx, ny, nz);
+                    if (neighbor_idx >= 0) {
+                        neighbor_counts[i]++;
+                        found = true;
+                        break;
                     }
                 }
-                next_neighbor:;
             }
         }
     }
@@ -717,40 +711,31 @@ void VoxelMap::buildSurfaceGraph()
     all_neighbors_.clear();
     all_neighbors_.reserve(total_neighbors);
     
-    // Step 4: 第二遍 - 填充 all_neighbors_
-    size_t current_pos = 0;
+    // Step 4: 第二遍 - 填充 all_neighbors_（与Step2逻辑完全一致）
     for (size_t i = 0; i < n; ++i) {
         const auto& node = surface_graph_[i];
-        
-        for (int dx = -1; dx <= 1; ++dx) {
-            for (int dy = -1; dy <= 1; ++dy) {
-                if (dx == 0 && dy == 0) continue;
-                
-                int nx = node.x + dx;
-                int ny = node.y + dy;
-                
-                // 优先检查同层
-                int neighbor_idx = coordToSurfaceIdx(nx, ny, node.z);
-                if (neighbor_idx >= 0) {
-                    all_neighbors_.push_back(neighbor_idx);
-                    continue;
-                }
-                
-                // 螺旋搜索 Z 方向
-                for (int dz_abs = 1; dz_abs <= z_search; ++dz_abs) {
-                    double height_diff = dz_abs * resolution_;
-                    if (height_diff > connectivity_height_threshold_) break;
-                    
-                    for (int sign : {-1, 1}) {
-                        int nz = node.z + sign * dz_abs;
-                        neighbor_idx = coordToSurfaceIdx(nx, ny, nz);
-                        if (neighbor_idx >= 0) {
-                            all_neighbors_.push_back(neighbor_idx);
-                            goto next_neighbor2;
-                        }
+
+        for (int di = 0; di < 4; ++di) {
+            int nx = node.x + dirs4[di][0];
+            int ny = node.y + dirs4[di][1];
+
+            int neighbor_idx = coordToSurfaceIdx(nx, ny, node.z);
+            if (neighbor_idx >= 0) {
+                all_neighbors_.push_back(neighbor_idx);
+                continue;
+            }
+
+            bool found = false;
+            for (int dz_abs = 1; dz_abs <= z_search && !found; ++dz_abs) {
+                for (int sign : {-1, 1}) {
+                    int nz = node.z + sign * dz_abs;
+                    neighbor_idx = coordToSurfaceIdx(nx, ny, nz);
+                    if (neighbor_idx >= 0) {
+                        all_neighbors_.push_back(neighbor_idx);
+                        found = true;
+                        break;
                     }
                 }
-                next_neighbor2:;
             }
         }
     }

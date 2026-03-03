@@ -27,13 +27,13 @@ public:
   JpsPlannerNode()
   : Node("jps_planner_node")
   {
-    declare_parameter<double>("connectivity_height_threshold", 0.6);
-    declare_parameter<double>("surface_clearance_height", 0.8);
-    declare_parameter<int>("distance_field_max_distance", 5);
+    declare_parameter<double>("connectivity_height_threshold", 0.3);
+    declare_parameter<double>("surface_clearance_height", 1.6);
+    declare_parameter<int>("distance_field_max_distance", 10);
     declare_parameter<double>("heuristic_weight", 1.0);
-    declare_parameter<double>("max_z_change", 0.5);
-    declare_parameter<double>("z_penalty_weight", 3.0);
-    declare_parameter<double>("potential_weight", 100.0);
+    declare_parameter<double>("w_up", 2.0);
+    declare_parameter<double>("w_down", 1.0);
+    declare_parameter<double>("w_obs", 0.5);
     declare_parameter<std::string>("frame_id", "map");
 
     voxel_map_ = std::make_shared<VoxelMap>();
@@ -69,9 +69,9 @@ private:
     planner_ = std::make_shared<JPS3D>(
       voxel_map_,
       get_parameter("heuristic_weight").as_double(),
-      get_parameter("max_z_change").as_double(),
-      get_parameter("z_penalty_weight").as_double(),
-      get_parameter("potential_weight").as_double());
+      get_parameter("w_up").as_double(),
+      get_parameter("w_down").as_double(),
+      get_parameter("w_obs").as_double());
   }
 
   void handleSetVoxelMap(

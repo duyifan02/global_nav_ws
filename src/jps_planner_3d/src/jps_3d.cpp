@@ -11,13 +11,14 @@ namespace jps_planner_3d
 JPS3D::JPS3D(
     std::shared_ptr<VoxelMap> voxel_map,
     double heuristic_weight,
-    double max_z_change,
-    double z_penalty_weight,
-    double /* potential_weight */)
+    double w_up,
+    double w_down,
+    double w_obs)
 : voxel_map_(voxel_map)
 , heuristic_weight_(heuristic_weight)
-, max_z_change_(max_z_change)
-, z_penalty_weight_(z_penalty_weight)
+, w_up_(w_up)
+, w_down_(w_down)
+, w_obs_(w_obs)
 , max_iterations_(50000)
 {
 }
@@ -161,13 +162,19 @@ double JPS3D::heuristic(int node1_idx, int node2_idx) const
     const auto& graph = voxel_map_->getSurfaceGraph();
     const auto& n1 = graph[node1_idx];
     const auto& n2 = graph[node2_idx];
-    
+
     int dx = std::abs(n1.x - n2.x);
     int dy = std::abs(n1.y - n2.y);
     int dz = std::abs(n1.z - n2.z);
-    int chebyshev = std::max({dx, dy, dz});
-    
-    return static_cast<double>(chebyshev) + std::abs(n1.distance - n2.distance) * 2.0;
+
+    double r = voxel_map_->getResolution();
+
+    // 论文公式(11): h(s) = r*‖s-s_goal‖₂ + r*|Δz_g|*ω_↓
+    // 可容许性: Euclidean下界路径长度，ω_↓ ≤ ω_↑ 保证z代价不高估
+    double eucl = r * std::sqrt(static_cast<double>(dx*dx + dy*dy + dz*dz));
+    double z_cost = dz * r * w_down_;
+
+    return eucl + z_cost;
 }
 
 double JPS3D::distance(int node1_idx, int node2_idx) const
@@ -175,18 +182,23 @@ double JPS3D::distance(int node1_idx, int node2_idx) const
     const auto& graph = voxel_map_->getSurfaceGraph();
     const auto& n1 = graph[node1_idx];
     const auto& n2 = graph[node2_idx];
-    
+
     int dx = std::abs(n1.x - n2.x);
     int dy = std::abs(n1.y - n2.y);
-    int dz = std::abs(n1.z - n2.z);
-    
-    double dist = static_cast<double>(std::max({dx, dy, dz}));
-    
-    if (dz > 0) {
-        dist += dz * z_penalty_weight_ * 0.1;
-    }
-    
-    return dist;
+    int dz_signed = n2.z - n1.z;  // 有符号：区分上坡/下坡
+    int dz = std::abs(dz_signed);
+
+    double r = voxel_map_->getResolution();
+
+    // 论文公式(10): c(s,s') = r*‖s'-s‖₂ + |Δz|*r*ω_z + ω_obs*r/(D(s')+1)
+    // ω_z ∈ {ω_↑, ω_↓, 0}，上坡用ω_↑，下坡用ω_↓，水平用0
+    double eucl = r * std::sqrt(static_cast<double>(dx*dx + dy*dy + dz*dz));
+    double wz = (dz_signed > 0) ? w_up_ : ((dz_signed < 0) ? w_down_ : 0.0);
+    double z_cost = dz * r * wz;
+    // 贴墙惩罚: D(s')=0(紧贴障碍)时最大，D越大惩罚越小，鼓励走空旷区域
+    double clearance_cost = w_obs_ * r / (n2.distance + 1);
+
+    return eucl + z_cost + clearance_cost;
 }
 
 } // namespace jps_planner_3d

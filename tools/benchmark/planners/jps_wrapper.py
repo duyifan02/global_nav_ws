@@ -91,70 +91,87 @@ class JPSPlanner:
     
     def set_voxel_map(self, occupied_points: List[Tuple[float, float, float]],
                       resolution: float = None,
-                      free_space_margin: float = None) -> bool:
+                      free_space_margin: float = None,
+                      seed_point: np.ndarray = None) -> bool:
         """
         设置体素地图
-        
+
         Args:
             occupied_points: 占据体素中心坐标列表 [(x,y,z), ...]
             resolution: 体素分辨率
             free_space_margin: 自由空间边距
-            
+            seed_point: BFS种子点世界坐标 [x, y, z]，指定可行走区域起点
+                        应传入规划起始位置，确保BFS从正确位置扩展
+
         Returns:
             是否成功
         """
         if self._set_map_client is None:
             print("[JPS] ROS2 not initialized")
             return False
-        
+
         from nav_interfaces.srv import SetVoxelMap
         from geometry_msgs.msg import Point
-        
+
         request = SetVoxelMap.Request()
         request.resolution = resolution or self.config.resolution
         request.free_space_margin = free_space_margin or self.config.free_space_margin
-        
+
         # 转换点格式
         for p in occupied_points:
             point = Point()
             point.x, point.y, point.z = float(p[0]), float(p[1]), float(p[2])
             request.occupied.append(point)
-        
+
+        # 设置BFS种子点（论文中以机器人当前位置为种子）
+        if seed_point is not None:
+            request.seed_point.x = float(seed_point[0])
+            request.seed_point.y = float(seed_point[1])
+            request.seed_point.z = float(seed_point[2]) if len(seed_point) > 2 else 0.0
+
         # 调用服务
         future = self._set_map_client.call_async(request)
         rclpy.spin_until_future_complete(self._node, future, timeout_sec=self.config.service_timeout)
-        
+
         if future.result() is not None:
             response = future.result()
             self._map_loaded = response.success
             if not response.success:
                 print(f"[JPS] set_voxel_map failed: {response.message}")
+            else:
+                print(f"[JPS] surface voxels: {response.surface_voxel_count}, "
+                      f"Te={response.traversability_time_ms:.1f}ms")
             return response.success
         else:
             print("[JPS] set_voxel_map service call failed")
             return False
     
-    def load_scene(self, scene_name: str, voxel_map=None) -> bool:
+    def load_scene(self, scene_name: str, voxel_map=None, seed_point: np.ndarray = None) -> bool:
         """
         加载场景地图
-        
+
         Args:
             scene_name: 场景名
             voxel_map: VoxelMap对象 (来自pcd_to_voxel)，None则自动加载
-            
+            seed_point: BFS种子点，None则使用该场景的默认起始位置
+
         Returns:
             是否成功
         """
         if voxel_map is None:
-            # 使用pcd_to_voxel加载
             from converters.pcd_to_voxel import get_voxel_map
             voxel_map = get_voxel_map(scene_name, self.config.resolution)
-        
+
+        # 使用规划起始位置作为BFS种子（论文：以机器人位置为种子）
+        if seed_point is None:
+            seed_point = SCENE_ENDPOINTS.get(scene_name.lower(), {}).get("start")
+
         success = self.set_voxel_map(
             voxel_map.occupied_list,
-            voxel_map.resolution
+            voxel_map.resolution,
+            seed_point=seed_point
         )
-        
+
         if success:
             self._loaded_scene = scene_name.lower()
         return success

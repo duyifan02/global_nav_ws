@@ -131,53 +131,64 @@ class RunResult:
 
 
 class RVizBenchmarkNode(Node):
-    def __init__(self, scene_name: str, resolution: float, num_trials: int):
+    def __init__(self, scene_name: str, resolution: float, num_trials: int,
+                 preloaded: bool = False):
         super().__init__('rviz_benchmark')
-        
+
         self.scene_name = scene_name
         self.resolution = resolution
         self.num_trials = num_trials
-        
-        self.state = SelectionState.WAITING_SEED
+        self.preloaded = preloaded  # True: 地图已由外部节点加载（如 obj_mesh_loader）
+
+        # preloaded 模式跳过种子选择，直接等待起点
+        self.state = SelectionState.WAITING_START if preloaded else SelectionState.WAITING_SEED
         self.seed_point: Optional[np.ndarray] = None
         self.start_point: Optional[np.ndarray] = None
         self.goal_point: Optional[np.ndarray] = None
-        self.voxel_centers: Optional[np.ndarray] = None
+        self.voxel_centers: Optional[np.ndarray] = None   # PCD 模式下有值
         self.occupied_list: Optional[List] = None
         self.surface_points: Optional[np.ndarray] = None  # 可通行区域，用于检查选点
-        
+
         self.all_runs: List[RunResult] = []
         self.map_info: Dict[str, Any] = {}
-        
+
         # 用于异步处理的锁和状态
         self._processing = False
         self._pending_action = None
-        
+
         # 使用 ReentrantCallbackGroup 允许嵌套回调
         self.cb_group = ReentrantCallbackGroup()
-        
+
         latching_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
-        
+
         self.pc_pub = self.create_publisher(PointCloud2, '/benchmark/pointcloud', latching_qos)
         self.surface_pub = self.create_publisher(PointCloud2, '/benchmark/surface', latching_qos)
         self.path_pub = self.create_publisher(NavPath, '/benchmark/path', 10)
         self.marker_pub = self.create_publisher(MarkerArray, '/benchmark/markers', 10)
-        
+
         self.click_sub = self.create_subscription(
             PointStamped, '/clicked_point', self.on_clicked_point, 10,
             callback_group=self.cb_group)
-        
+
         self.set_map_client = self.create_client(SetVoxelMap, '/set_voxel_map', callback_group=self.cb_group)
         self.plan_client = self.create_client(PlanPath, '/plan_path', callback_group=self.cb_group)
         self.get_surface_client = self.create_client(GetDistanceField, '/get_distance_field', callback_group=self.cb_group)
-        
+
         self.get_logger().info("等待JPS服务...")
         self.set_map_client.wait_for_service(timeout_sec=10.0)
         self.plan_client.wait_for_service(timeout_sec=10.0)
         self.get_logger().info("JPS服务已连接")
-        
-        self.load_scene()
-        self.publish_pointcloud()
+
+        if preloaded:
+            # 地图已由外部加载（obj_mesh_loader），直接拉取 surface 发布到 RViz
+            self.get_surface_client.wait_for_service(timeout_sec=5.0)
+            self.map_info = {'scene': scene_name, 'resolution': resolution,
+                             'source': 'preloaded (obj_mesh_loader)'}
+            self.publish_surface()
+        else:
+            self.load_scene()
+            self.publish_pointcloud()
+
         self.print_instructions()
     
     def print_instructions(self):
@@ -186,28 +197,40 @@ class RVizBenchmarkNode(Node):
         print("="*70)
         print(f"场景: {self.scene_name}")
         print(f"分辨率: {self.resolution}m")
-        print(f"体素数: {self.map_info.get('num_voxels', 'N/A')}")
+        if self.preloaded:
+            print("模式: Preloaded (地图已由外部节点加载，如 obj_mesh_loader)")
+        else:
+            print(f"体素数: {self.map_info.get('num_voxels', 'N/A')}")
         print(f"每组测试次数: {self.num_trials}")
         print()
         print("RViz2设置:")
         print("  1. Fixed Frame: map")
-        print("  2. Add PointCloud2: /benchmark/pointcloud (原始点云，白色)")
-        print("  3. Add PointCloud2: /benchmark/surface (可通行区域，绿色)")
-        print("  4. Add Path: /benchmark/path")
-        print("  5. Add MarkerArray: /benchmark/markers")
+        if not self.preloaded:
+            print("  2. Add PointCloud2: /benchmark/pointcloud (原始点云，白色)")
+        print("  2. Add PointCloud2: /benchmark/surface (可通行区域，绿色)")
+        print("  3. Add Path: /benchmark/path")
+        print("  4. Add MarkerArray: /benchmark/markers")
         print()
         print("重要提示:")
         print("  ⚠️  起点和终点必须选在【绿色 surface 点云】上！")
         print("  ⚠️  否则会规划失败 (Planning was cancelled)")
         print()
         print("操作流程:")
-        print("  1. 点击选择【建图种子点】(蓝色) - 确定可行走区域")
-        print("  2. 点击选择【导航起点】(绿色) - 必须在绿色点云上！")
-        print("  3. 点击选择【导航终点】(红色) - 必须在绿色点云上！")
-        print("  4. 继续点击选择新的起点/终点")
-        print("  5. Ctrl+C 退出并保存结果")
-        print()
-        print("当前状态: 等待选择建图种子点...")
+        if self.preloaded:
+            print("  1. 点击选择【导航起点】(绿色) - 必须在绿色点云上！")
+            print("  2. 点击选择【导航终点】(红色) - 必须在绿色点云上！")
+            print("  3. 继续点击选择新的起点/终点")
+            print("  4. Ctrl+C 退出并保存结果")
+            print()
+            print("当前状态: 等待选择导航起点...")
+        else:
+            print("  1. 点击选择【建图种子点】(蓝色) - 确定可行走区域")
+            print("  2. 点击选择【导航起点】(绿色) - 必须在绿色点云上！")
+            print("  3. 点击选择【导航终点】(红色) - 必须在绿色点云上！")
+            print("  4. 继续点击选择新的起点/终点")
+            print("  5. Ctrl+C 退出并保存结果")
+            print()
+            print("当前状态: 等待选择建图种子点...")
         print("="*70)
     
     def load_scene(self):
@@ -407,9 +430,16 @@ class RVizBenchmarkNode(Node):
             print("\n等待选择新的导航起点...")
     
     def find_nearest_voxel(self, point):
-        distances = np.linalg.norm(self.voxel_centers - point, axis=1)
-        idx = distances.argmin()
-        return self.voxel_centers[idx], distances[idx]
+        """找到离点最近的体素中心及距离。preloaded 模式下 voxel_centers 为 None，退而使用 surface_points。"""
+        if self.voxel_centers is not None:
+            distances = np.linalg.norm(self.voxel_centers - point, axis=1)
+            idx = distances.argmin()
+            return self.voxel_centers[idx], distances[idx]
+        elif self.surface_points is not None and len(self.surface_points) > 0:
+            distances = np.linalg.norm(self.surface_points - point, axis=1)
+            idx = distances.argmin()
+            return self.surface_points[idx], distances[idx]
+        return point, 0.0
     
     def find_nearest_surface(self, point):
         """找到离点最近的 surface 点及距离"""
@@ -749,11 +779,14 @@ def main():
     parser.add_argument('--scene', default='spiral', choices=['spiral', 'building', 'plaza'])
     parser.add_argument('--resolution', type=float, default=0.5)
     parser.add_argument('--trials', type=int, default=100, help='每组起终点的测试次数')
+    parser.add_argument('--preloaded', action='store_true',
+                        help='地图已由外部节点加载（如 obj_mesh_loader），跳过种子点选择和点云发布')
     args = parser.parse_args()
-    
+
     rclpy.init()
-    
-    node = RVizBenchmarkNode(args.scene, args.resolution, args.trials)
+
+    node = RVizBenchmarkNode(args.scene, args.resolution, args.trials,
+                             preloaded=args.preloaded)
     
     # 使用 MultiThreadedExecutor 支持在回调中等待服务响应
     executor = MultiThreadedExecutor(num_threads=4)
