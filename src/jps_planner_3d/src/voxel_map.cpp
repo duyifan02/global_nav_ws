@@ -669,6 +669,9 @@ void VoxelMap::buildSurfaceGraph()
     constexpr int dirs4[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
 
     // Step 2: 第一遍 - 统计每个节点的邻居数量
+    // 修复：遍历 [-z_search, z_search] 全范围内所有 surface 邻居，
+    // 而不是找到第一个就停止。原逻辑只连接最近的 z 邻居，会导致
+    // surface graph 不连通（BFS 可达的节点在 graph 中却无法互达）。
     std::vector<int> neighbor_counts(n, 0);
 
     for (size_t i = 0; i < n; ++i) {
@@ -678,29 +681,14 @@ void VoxelMap::buildSurfaceGraph()
             int nx = node.x + dirs4[di][0];
             int ny = node.y + dirs4[di][1];
 
-            // 优先检查同层
-            int neighbor_idx = coordToSurfaceIdx(nx, ny, node.z);
-            if (neighbor_idx >= 0) {
-                neighbor_counts[i]++;
-                continue;
-            }
-
-            // 搜索Z方向（Z连通：|Δz| ≤ k）
-            bool found = false;
-            for (int dz_abs = 1; dz_abs <= z_search && !found; ++dz_abs) {
-                for (int sign : {-1, 1}) {
-                    int nz = node.z + sign * dz_abs;
-                    neighbor_idx = coordToSurfaceIdx(nx, ny, nz);
-                    if (neighbor_idx >= 0) {
-                        neighbor_counts[i]++;
-                        found = true;
-                        break;
-                    }
+            for (int dz = -z_search; dz <= z_search; ++dz) {
+                if (coordToSurfaceIdx(nx, ny, node.z + dz) >= 0) {
+                    neighbor_counts[i]++;
                 }
             }
         }
     }
-    
+
     // Step 3: 计算 all_neighbors_ 的总大小并预分配
     size_t total_neighbors = 0;
     for (size_t i = 0; i < n; ++i) {
@@ -710,7 +698,7 @@ void VoxelMap::buildSurfaceGraph()
     }
     all_neighbors_.clear();
     all_neighbors_.reserve(total_neighbors);
-    
+
     // Step 4: 第二遍 - 填充 all_neighbors_（与Step2逻辑完全一致）
     for (size_t i = 0; i < n; ++i) {
         const auto& node = surface_graph_[i];
@@ -719,22 +707,10 @@ void VoxelMap::buildSurfaceGraph()
             int nx = node.x + dirs4[di][0];
             int ny = node.y + dirs4[di][1];
 
-            int neighbor_idx = coordToSurfaceIdx(nx, ny, node.z);
-            if (neighbor_idx >= 0) {
-                all_neighbors_.push_back(neighbor_idx);
-                continue;
-            }
-
-            bool found = false;
-            for (int dz_abs = 1; dz_abs <= z_search && !found; ++dz_abs) {
-                for (int sign : {-1, 1}) {
-                    int nz = node.z + sign * dz_abs;
-                    neighbor_idx = coordToSurfaceIdx(nx, ny, nz);
-                    if (neighbor_idx >= 0) {
-                        all_neighbors_.push_back(neighbor_idx);
-                        found = true;
-                        break;
-                    }
+            for (int dz = -z_search; dz <= z_search; ++dz) {
+                int neighbor_idx = coordToSurfaceIdx(nx, ny, node.z + dz);
+                if (neighbor_idx >= 0) {
+                    all_neighbors_.push_back(neighbor_idx);
                 }
             }
         }

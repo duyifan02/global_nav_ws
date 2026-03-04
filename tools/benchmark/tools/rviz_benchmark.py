@@ -382,12 +382,15 @@ class RVizBenchmarkNode(Node):
         nearest, dist = self.find_nearest_voxel(point)
         
         if self.state == SelectionState.WAITING_SEED:
-            self.seed_point = point
-            print(f"\n建图种子点: [{point[0]:.2f}, {point[1]:.2f}, {point[2]:.2f}]")
-            print(f"  最近体素距离: {dist:.3f}m")
+            # 吸附到最近占据体素，修正 RViz 地板点击导致的 z≈0 问题
+            self.seed_point = nearest
+            print(f"\n建图种子点 (原始点击): [{point[0]:.2f}, {point[1]:.2f}, {point[2]:.2f}]")
+            print(f"  → 吸附到最近体素:      [{nearest[0]:.2f}, {nearest[1]:.2f}, {nearest[2]:.2f}]  (偏移 {dist:.2f}m)")
+            if dist > 1.0:
+                print(f"  ⚠️  偏移 > 1m，请点击白色点云本体（道路表面），而非 RViz 地板！")
             self.publish_markers()
-            
-            if self.set_jps_map(point):
+
+            if self.set_jps_map(nearest):
                 self.state = SelectionState.WAITING_START
                 print("\n等待选择导航起点...")
             else:

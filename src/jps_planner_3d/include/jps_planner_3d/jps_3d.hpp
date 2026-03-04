@@ -40,7 +40,6 @@ private:
     double w_up_;    // 上坡惩罚权重 ω_↑ (论文: 2.0)
     double w_down_;  // 下坡惩罚权重 ω_↓ (论文: 1.0)
     double w_obs_;   // 障碍物间隙权重 ω_obs (论文: 0.5)
-    int max_iterations_;
     int expanded_nodes_ = 0;
     int iterations_ = 0;
 };

@@ -19,7 +19,6 @@ JPS3D::JPS3D(
 , w_up_(w_up)
 , w_down_(w_down)
 , w_obs_(w_obs)
-, max_iterations_(50000)
 {
 }
 
@@ -112,12 +111,14 @@ std::vector<int> JPS3D::searchOnGraph(int start_idx, int goal_idx)
     
     iterations_ = 0;
     expanded_nodes_ = 0;
-    
-    while (!open_set.empty() && iterations_ < max_iterations_) {
+    // 上限改为图节点数：每个节点最多被展开一次，超过即说明已遍历全部可达节点
+    const int max_expanded = n;
+
+    while (!open_set.empty() && expanded_nodes_ < max_expanded) {
         iterations_++;
         auto [current_f, current_g, current_idx] = open_set.top();
         open_set.pop();
-        
+
         if (closed[current_idx]) continue;
         
         if (current_idx == goal_idx) {
