@@ -2,11 +2,11 @@
 Metrics calculation utilities for planner benchmarking.
 
 Implements evaluation metrics from PCT Paper Section IV-C:
-- Planning time (ms)
+- Ts: path searching time (ms)
 - Path length (m)
 - Success rate (%)
 - Jerk integral (trajectory smoothness)
-- Search efficiency (nodes explored)
+- Ns: visited graph nodes for planning
 """
 
 import numpy as np
@@ -125,13 +125,23 @@ def aggregate_results(results: List[PlanningResult]) -> dict:
     if not successful:
         return stats
     
-    # Planning time statistics
+    # Ts: path searching time statistics
     planning_times = [r.planning_time_ms for r in successful]
-    stats["planning_time_mean_ms"] = np.mean(planning_times)
-    stats["planning_time_std_ms"] = np.std(planning_times)
-    stats["planning_time_median_ms"] = np.median(planning_times)
-    stats["planning_time_min_ms"] = np.min(planning_times)
-    stats["planning_time_max_ms"] = np.max(planning_times)
+    ts_mean = np.mean(planning_times)
+    ts_std = np.std(planning_times)
+    ts_median = np.median(planning_times)
+    ts_min = np.min(planning_times)
+    ts_max = np.max(planning_times)
+    stats["ts_mean_ms"] = ts_mean
+    stats["ts_std_ms"] = ts_std
+    stats["ts_median_ms"] = ts_median
+    stats["ts_min_ms"] = ts_min
+    stats["ts_max_ms"] = ts_max
+    stats["planning_time_mean_ms"] = ts_mean
+    stats["planning_time_std_ms"] = ts_std
+    stats["planning_time_median_ms"] = ts_median
+    stats["planning_time_min_ms"] = ts_min
+    stats["planning_time_max_ms"] = ts_max
     
     # Path length statistics
     path_lengths = [r.path_length_m for r in successful if r.path_length_m is not None]
@@ -150,9 +160,15 @@ def aggregate_results(results: List[PlanningResult]) -> dict:
     # Nodes explored statistics
     nodes_explored = [r.nodes_explored for r in successful if r.nodes_explored is not None]
     if nodes_explored:
-        stats["nodes_explored_mean"] = np.mean(nodes_explored)
-        stats["nodes_explored_std"] = np.std(nodes_explored)
-        stats["nodes_explored_median"] = np.median(nodes_explored)
+        ns_mean = np.mean(nodes_explored)
+        ns_std = np.std(nodes_explored)
+        ns_median = np.median(nodes_explored)
+        stats["ns_visited_nodes_mean"] = ns_mean
+        stats["ns_visited_nodes_std"] = ns_std
+        stats["ns_visited_nodes_median"] = ns_median
+        stats["nodes_explored_mean"] = ns_mean
+        stats["nodes_explored_std"] = ns_std
+        stats["nodes_explored_median"] = ns_median
     
     # Trajectory duration statistics
     durations = [r.trajectory_duration_s for r in successful if r.trajectory_duration_s is not None]
@@ -184,8 +200,8 @@ def save_results_csv(results: List[PlanningResult],
         # Header
         writer.writerow([
             "planner", "scene", "trial", "success",
-            "planning_time_ms", "path_length_m", "jerk_integral",
-            "nodes_explored", "trajectory_duration_s", "error"
+            "ts_ms", "planning_time_ms", "path_length_m", "jerk_integral",
+            "ns_visited_nodes", "nodes_explored", "trajectory_duration_s", "error"
         ])
         
         # Data rows
@@ -196,8 +212,10 @@ def save_results_csv(results: List[PlanningResult],
                 i,
                 result.success,
                 result.planning_time_ms if result.success else None,
+                result.planning_time_ms if result.success else None,
                 result.path_length_m if result.success else None,
                 result.jerk_integral if result.success else None,
+                result.nodes_explored if result.success else None,
                 result.nodes_explored if result.success else None,
                 result.trajectory_duration_s if result.success else None,
                 result.error_message if not result.success else ""

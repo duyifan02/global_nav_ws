@@ -105,7 +105,7 @@ class PCTPlanner:
         Returns:
             dict: {
                 'success': bool,
-                'planning_time_ms': float,
+                'ts_ms': float,
                 'path': np.ndarray (Nx3) or None,
                 'path_length_m': float or None,
                 'error': str or None
@@ -114,6 +114,8 @@ class PCTPlanner:
         if self._planner is None:
             return {
                 'success': False,
+                'ts_ms': 0,
+                'ns_visited_nodes': 0,
                 'planning_time_ms': 0,
                 'path': None,
                 'path_length_m': None,
@@ -131,9 +133,12 @@ class PCTPlanner:
             t_end = time.perf_counter()
             
             if traj_3d is None or len(traj_3d) == 0:
+                ts_ms = (t_end - t_start) * 1000
                 return {
                     'success': False,
-                    'planning_time_ms': (t_end - t_start) * 1000,
+                    'ts_ms': ts_ms,
+                    'ns_visited_nodes': 0,
+                    'planning_time_ms': ts_ms,
                     'path': None,
                     'path_length_m': None,
                     'error': 'No path found'
@@ -142,9 +147,12 @@ class PCTPlanner:
             # 计算路径长度
             path_length = self._compute_path_length(traj_3d)
             
+            ts_ms = (t_end - t_start) * 1000
             return {
                 'success': True,
-                'planning_time_ms': (t_end - t_start) * 1000,
+                'ts_ms': ts_ms,
+                'ns_visited_nodes': 0,
+                'planning_time_ms': ts_ms,
                 'path': traj_3d,
                 'path_length_m': path_length,
                 'error': None
@@ -152,9 +160,12 @@ class PCTPlanner:
             
         except Exception as e:
             t_end = time.perf_counter()
+            ts_ms = (t_end - t_start) * 1000
             return {
                 'success': False,
-                'planning_time_ms': (t_end - t_start) * 1000,
+                'ts_ms': ts_ms,
+                'ns_visited_nodes': 0,
+                'planning_time_ms': ts_ms,
                 'path': None,
                 'path_length_m': None,
                 'error': str(e)
@@ -233,6 +244,7 @@ if __name__ == "__main__":
     
     for r in results:
         if r['success']:
-            print(f"Trial {r['trial']}: {r['planning_time_ms']:.2f}ms, {r['path_length_m']:.2f}m")
+            ts_ms = r.get('ts_ms', r.get('planning_time_ms', 0.0))
+            print(f"Trial {r['trial']}: Ts={ts_ms:.2f}ms, {r['path_length_m']:.2f}m")
         else:
             print(f"Trial {r['trial']}: FAILED - {r['error']}")

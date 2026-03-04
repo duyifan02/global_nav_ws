@@ -54,6 +54,7 @@ class JPSPlanner:
         self._plan_client = None
         self._map_loaded = False
         self._loaded_scene = None
+        self._last_te_ms = 0.0
         
     def init_ros2(self) -> bool:
         """初始化ROS2节点"""
@@ -135,8 +136,9 @@ class JPSPlanner:
             if not response.success:
                 print(f"[JPS] set_voxel_map failed: {response.message}")
             else:
+                self._last_te_ms = float(getattr(response, 'traversability_time_ms', 0.0))
                 print(f"[JPS] surface voxels: {response.surface_voxel_count}, "
-                      f"Te={response.traversability_time_ms:.1f}ms")
+                      f"Te={self._last_te_ms:.1f}ms")
             return response.success
         else:
             print("[JPS] set_voxel_map service call failed")
@@ -181,12 +183,16 @@ class JPSPlanner:
             goal: 终点 [x, y, z]
             
         Returns:
-            规划结果字典
+            规划结果字典（含 Ts/Ns 指标，兼容旧字段）
         """
         if not self._map_loaded:
             return {
                 'success': False,
+                'ts_ms': 0,
+                'ns_visited_nodes': 0,
+                'te_ms': self._last_te_ms,
                 'planning_time_ms': 0,
+                'expanded_nodes': 0,
                 'path': None,
                 'path_length_m': None,
                 'error': 'Map not loaded. Call load_scene() first.'
@@ -232,18 +238,30 @@ class JPSPlanner:
                 
                 # 计算路径长度
                 path_length = self._compute_path_length(path)
+                ts_ms = float(getattr(response, 'planning_time_ms', planning_time_ms))
+                ns = int(getattr(response, 'expanded_nodes', 0))
                 
                 return {
                     'success': True,
-                    'planning_time_ms': planning_time_ms,
+                    'ts_ms': ts_ms,
+                    'ns_visited_nodes': ns,
+                    'te_ms': self._last_te_ms,
+                    'planning_time_ms': ts_ms,
+                    'expanded_nodes': ns,
                     'path': path,
                     'path_length_m': path_length,
                     'error': None
                 }
             else:
+                ts_ms = float(getattr(response, 'planning_time_ms', planning_time_ms))
+                ns = int(getattr(response, 'expanded_nodes', 0))
                 return {
                     'success': False,
-                    'planning_time_ms': planning_time_ms,
+                    'ts_ms': ts_ms,
+                    'ns_visited_nodes': ns,
+                    'te_ms': self._last_te_ms,
+                    'planning_time_ms': ts_ms,
+                    'expanded_nodes': ns,
                     'path': None,
                     'path_length_m': None,
                     'error': response.message
@@ -251,7 +269,11 @@ class JPSPlanner:
         else:
             return {
                 'success': False,
+                'ts_ms': planning_time_ms,
+                'ns_visited_nodes': 0,
+                'te_ms': self._last_te_ms,
                 'planning_time_ms': planning_time_ms,
+                'expanded_nodes': 0,
                 'path': None,
                 'path_length_m': None,
                 'error': 'Service call failed or timed out'
@@ -295,7 +317,11 @@ class JPSPlannerStandalone:
         """执行规划 (需要ROS2节点运行)"""
         return {
             'success': False,
+            'ts_ms': 0,
+            'ns_visited_nodes': 0,
+            'te_ms': 0,
             'planning_time_ms': 0,
+            'expanded_nodes': 0,
             'path': None,
             'error': 'Standalone mode requires external JPS node. Start jps_planner_node first.'
         }
@@ -395,7 +421,9 @@ if __name__ == "__main__":
         
         for r in results:
             if r['success']:
-                print(f"Trial {r.get('trial', 0)}: {r['planning_time_ms']:.2f}ms, {r['path_length_m']:.2f}m")
+                ts_ms = r.get('ts_ms', r.get('planning_time_ms', 0.0))
+                ns = r.get('ns_visited_nodes', r.get('expanded_nodes', 0))
+                print(f"Trial {r.get('trial', 0)}: Ts={ts_ms:.2f}ms, Ns={ns}, {r['path_length_m']:.2f}m")
             else:
                 print(f"Trial {r.get('trial', 0)}: FAILED - {r.get('error', 'Unknown')}")
     else:

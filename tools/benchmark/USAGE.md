@@ -189,15 +189,15 @@ python3 rviz_benchmark.py --preloaded --scene s1 --resolution 0.1 --trials 50
 
 | 指标 | 符号 | 说明 |
 |------|------|------|
-| 预处理时间 | Tp | PCD→体素化耗时（仅 Workflow A） |
-| 可通行性估计时间 | Te | buildReachableMap + 距离场构建耗时 |
-| 路径搜索时间 | Ts | A* 搜索耗时（C++ 端测量，不含 ROS 通信） |
+| 点云预处理时间 | Tp | point cloud pre-processing time（仅 Workflow A） |
+| 可通行性估计时间 | Te | traversability estimation time |
+| 路径搜索时间 | Ts | path searching time（C++ 端测量，不含 ROS 通信） |
 | 总导航时间 | Tall | Tp + Te + Ts + To |
 | 路径长度 | — | 三维欧氏路径长度 (m) |
-| 扩展节点数 | Ns | A* 扩展的图节点数 |
+| 访问图节点数 | Ns | visited graph nodes for planning |
 | 内存使用 | Size | 体素数（字节估算） |
 
-> `planning_time_ms`（即 Ts）由 C++ 节点内部计时，**不包含 ROS2 服务调用开销**。
+> `ts_ms`（兼容别名 `planning_time_ms`）由 C++ 节点内部计时，**不包含 ROS2 服务调用开销**。
 
 ---
 
@@ -221,16 +221,18 @@ JSON 结构：
     "total_runs": 5,
     "total_trials": 250,
     "success_rate": 1.0,
-    "planning_time_ms": { "mean": 47.3, "std": 3.1, "min": 41.2, "max": 58.7, "median": 46.9 },
+    "tp_ms": { "mean": 531.2, "std": 0.0, "min": 531.2, "max": 531.2, "median": 531.2 },
+    "te_ms": { "mean": 182.6, "std": 0.0, "min": 182.6, "max": 182.6, "median": 182.6 },
+    "ts_ms": { "mean": 47.3, "std": 3.1, "min": 41.2, "max": 58.7, "median": 46.9 },
     "path_length_m": { "mean": 28.4, "std": 0.0 },
-    "expanded_nodes": { "mean": 1842, "std": 0 }
+    "ns_visited_nodes": { "mean": 1842, "std": 0 }
   },
   "runs": [
     {
       "start": [-16.0, -6.0, 2.8],
       "goal": [-26.0, -5.0, 2.8],
       "euclidean_distance": 10.05,
-      "trials": [ { "success": true, "planning_time_ms": 47.3, ... } ]
+      "trials": [ { "success": true, "tp_ms": 531.2, "te_ms": 182.6, "ts_ms": 47.3, "ns_visited_nodes": 1842, ... } ]
     }
   ]
 }
@@ -297,5 +299,5 @@ global_nav_ws/src/
 
 **Q: 注意事项**
 - 使用系统 Python 3.12，**不要使用 conda** 环境（ROS2 依赖系统 Python）
-- `planning_time_ms` 是 C++ 端测量的纯算法时间，不含 ROS 服务通信开销
+- `ts_ms` 是 C++ 端测量的纯算法时间，不含 ROS 服务通信开销（兼容别名：`planning_time_ms`）
 - JPS 是确定性算法：同一起终点多次测试的路径和扩展节点数完全一致，规划时间的微小波动来自 CPU 调度

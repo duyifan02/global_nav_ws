@@ -55,16 +55,32 @@ class SelectionState(Enum):
 @dataclass 
 class TrialResult:
     success: bool
-    planning_time_ms: float  # Ts: path searching time
-    expanded_nodes: int  # Ns: visited graph nodes
+    ts_ms: float  # Ts: path searching time
+    ns_visited_nodes: int  # Ns: visited graph nodes for planning
     path_length_m: float
     num_waypoints: int
-    preprocessing_time_ms: float = 0.0  # Tp: point cloud pre-processing time
+    tp_ms: float = 0.0  # Tp: point cloud pre-processing time
     memory_usage_bytes: int = 0  # Size: memory usage of scene representation
-    traversability_time_ms: float = 0.0  # Te: traversability estimation time
+    te_ms: float = 0.0  # Te: traversability estimation time
     optimization_time_ms: float = 0.0  # To: trajectory optimization time
     total_time_ms: float = 0.0  # Tall: total navigation time
     error: Optional[str] = None
+
+    @property
+    def planning_time_ms(self) -> float:
+        return self.ts_ms
+
+    @property
+    def expanded_nodes(self) -> int:
+        return self.ns_visited_nodes
+
+    @property
+    def preprocessing_time_ms(self) -> float:
+        return self.tp_ms
+
+    @property
+    def traversability_time_ms(self) -> float:
+        return self.te_ms
 
 
 @dataclass
@@ -89,38 +105,47 @@ class RunResult:
     def get_stats(self) -> Dict[str, Any]:
         successful = self.successful_trials
         if not successful:
+            ts_stats = {'mean': 0, 'std': 0, 'min': 0, 'max': 0}
+            ns_stats = {'mean': 0, 'std': 0, 'min': 0, 'max': 0}
             return {
                 'success_rate': 0.0,
-                'planning_time_ms': {'mean': 0, 'std': 0, 'min': 0, 'max': 0},
+                'ts_ms': ts_stats,
+                'planning_time_ms': ts_stats,
                 'path_length_m': {'mean': 0, 'std': 0, 'min': 0, 'max': 0},
-                'expanded_nodes': {'mean': 0, 'std': 0, 'min': 0, 'max': 0},
+                'ns_visited_nodes': ns_stats,
+                'expanded_nodes': ns_stats,
             }
         
-        times = [t.planning_time_ms for t in successful]
+        times = [t.ts_ms for t in successful]
         lengths = [t.path_length_m for t in successful]
-        nodes = [t.expanded_nodes for t in successful]
+        nodes = [t.ns_visited_nodes for t in successful]
         total_times = [t.total_time_ms for t in successful]
+
+        ts_stats = {
+            'mean': np.mean(times),
+            'std': np.std(times),
+            'min': np.min(times),
+            'max': np.max(times),
+        }
+        ns_stats = {
+            'mean': np.mean(nodes),
+            'std': np.std(nodes),
+            'min': int(np.min(nodes)),
+            'max': int(np.max(nodes)),
+        }
         
         return {
             'success_rate': self.success_rate,
-            'planning_time_ms': {
-                'mean': np.mean(times),
-                'std': np.std(times),
-                'min': np.min(times),
-                'max': np.max(times),
-            },
+            'ts_ms': ts_stats,
+            'planning_time_ms': ts_stats,
             'path_length_m': {
                 'mean': np.mean(lengths),
                 'std': np.std(lengths),
                 'min': np.min(lengths),
                 'max': np.max(lengths),
             },
-            'expanded_nodes': {
-                'mean': np.mean(nodes),
-                'std': np.std(nodes),
-                'min': int(np.min(nodes)),
-                'max': int(np.max(nodes)),
-            },
+            'ns_visited_nodes': ns_stats,
+            'expanded_nodes': ns_stats,
             'total_time_ms': {
                 'mean': np.mean(total_times),
                 'std': np.std(total_times),
@@ -519,10 +544,10 @@ class RVizBenchmarkNode(Node):
         )
         
         # 点云预处理时间 (Tp) - 加载场景的时间
-        preprocessing_time_ms = getattr(self, '_preprocessing_time_ms', 0.0)
+        tp_ms = getattr(self, '_preprocessing_time_ms', 0.0)
         
-        # 可通行性估计时间 (Te) - buildReachableMap 的时间
-        traversability_time_ms = getattr(self, '_traversability_time_ms', 0.0)
+        # 可通行性估计时间 (Te)
+        te_ms = getattr(self, '_traversability_time_ms', 0.0)
         
         # 内存使用估算 (Size) - 每个体素约 1 byte (surface_array)
         memory_usage_bytes = len(self.occupied_list) if self.occupied_list else 0
@@ -532,7 +557,7 @@ class RVizBenchmarkNode(Node):
         print(f"起点: {self.start_point}")
         print(f"终点: {self.goal_point}")
         print(f"直线距离: {euclidean_dist:.2f}m")
-        print(f"Tp (预处理): {preprocessing_time_ms:.2f}ms | Te (可通行性): {traversability_time_ms:.2f}ms")
+        print(f"Tp (预处理): {tp_ms:.2f}ms | Te (可通行性): {te_ms:.2f}ms")
         print(f"Size (内存): {memory_usage_bytes} bytes")
         print(f"{'='*60}")
         
@@ -542,17 +567,17 @@ class RVizBenchmarkNode(Node):
             result = self.call_plan_service()
 
             # Tall = Tp + Te + Ts + To (纯算法总时间，不含ROS通信)
-            total_time_ms = preprocessing_time_ms + traversability_time_ms + result['planning_time_ms'] + 0.0
+            total_time_ms = tp_ms + te_ms + result['ts_ms'] + 0.0
 
             trial = TrialResult(
                 success=result['success'],
-                planning_time_ms=result['planning_time_ms'],  # Ts
-                expanded_nodes=result['expanded_nodes'],  # Ns
+                ts_ms=result['ts_ms'],  # Ts
+                ns_visited_nodes=result['ns_visited_nodes'],  # Ns
                 path_length_m=result.get('path_length_m', 0.0),
                 num_waypoints=result.get('num_waypoints', 0),
-                preprocessing_time_ms=preprocessing_time_ms,  # Tp
+                tp_ms=tp_ms,  # Tp
                 memory_usage_bytes=memory_usage_bytes,  # Size
-                traversability_time_ms=traversability_time_ms,  # Te
+                te_ms=te_ms,  # Te
                 optimization_time_ms=0.0,  # To (当前无轨迹优化)
                 total_time_ms=total_time_ms,  # Tall = Tp + Te + Ts + To
                 error=result.get('error'),
@@ -561,7 +586,7 @@ class RVizBenchmarkNode(Node):
             
             if result['success']:
                 last_path = result['path']
-                status = f"✓ {result['planning_time_ms']:.2f}ms | {result['path_length_m']:.2f}m | {result['expanded_nodes']} nodes"
+                status = f"✓ Ts={result['ts_ms']:.2f}ms | {result['path_length_m']:.2f}m | Ns={result['ns_visited_nodes']}"
                 self.publish_path(last_path)
             else:
                 status = f"✗ {result['error']}"
@@ -578,13 +603,13 @@ class RVizBenchmarkNode(Node):
         print("本轮统计 (纯算法耗时，不含ROS通信):")
         print(f"  成功率: {stats['success_rate']*100:.1f}%")
         if stats['success_rate'] > 0:
-            print(f"  [Tp] 预处理时间: {preprocessing_time_ms:.2f} ms")
-            print(f"  [Te] 可通行性估计: {traversability_time_ms:.2f} ms")
-            print(f"  [Ts] 路径搜索时间: {stats['planning_time_ms']['mean']:.2f} ± {stats['planning_time_ms']['std']:.2f} ms")
+            print(f"  [Tp] 点云预处理时间: {tp_ms:.2f} ms")
+            print(f"  [Te] 可通行性估计时间: {te_ms:.2f} ms")
+            print(f"  [Ts] 路径搜索时间: {stats['ts_ms']['mean']:.2f} ± {stats['ts_ms']['std']:.2f} ms")
             print(f"  [To] 轨迹优化时间: 0.00 ms (未启用)")
             print(f"  [Tall] 总导航时间: {stats.get('total_time_ms', {}).get('mean', 0):.2f} ms")
             print(f"  [Size] 内存使用: {memory_usage_bytes} bytes")
-            print(f"  [Ns] 扩展节点: {stats['expanded_nodes']['mean']:.0f} ± {stats['expanded_nodes']['std']:.0f}")
+            print(f"  [Ns] 规划访问图节点数: {stats['ns_visited_nodes']['mean']:.0f} ± {stats['ns_visited_nodes']['std']:.0f}")
             print(f"  路径长度: {stats['path_length_m']['mean']:.2f} ± {stats['path_length_m']['std']:.2f} m")
         
         self.print_cumulative_stats()
@@ -606,20 +631,20 @@ class RVizBenchmarkNode(Node):
         print(f"  总成功率: {total_successes/total_trials*100:.1f}%")
         
         if all_successful:
-            times = [t.planning_time_ms for t in all_successful]
+            times = [t.ts_ms for t in all_successful]
             lengths = [t.path_length_m for t in all_successful]
-            nodes = [t.expanded_nodes for t in all_successful]
+            nodes = [t.ns_visited_nodes for t in all_successful]
             total_times = [t.total_time_ms for t in all_successful]
-            tps = [t.preprocessing_time_ms for t in all_successful]
-            tes = [t.traversability_time_ms for t in all_successful]
+            tps = [t.tp_ms for t in all_successful]
+            tes = [t.te_ms for t in all_successful]
             sizes = [t.memory_usage_bytes for t in all_successful]
-            print(f"  [Tp] 预处理时间: {np.mean(tps):.2f} ms")
-            print(f"  [Te] 可通行性估计: {np.mean(tes):.2f} ms")
+            print(f"  [Tp] 点云预处理时间: {np.mean(tps):.2f} ms")
+            print(f"  [Te] 可通行性估计时间: {np.mean(tes):.2f} ms")
             print(f"  [Ts] 路径搜索: {np.mean(times):.2f} ± {np.std(times):.2f} ms")
             print(f"  [To] 轨迹优化: 0.00 ms (未启用)")
             print(f"  [Tall] 总导航时间: {np.mean(total_times):.2f} ± {np.std(total_times):.2f} ms")
             print(f"  [Size] 内存使用: {np.mean(sizes):.0f} bytes")
-            print(f"  [Ns] 扩展节点: {np.mean(nodes):.0f} ± {np.std(nodes):.0f}")
+            print(f"  [Ns] 规划访问图节点数: {np.mean(nodes):.0f} ± {np.std(nodes):.0f}")
             print(f"  平均路径长度: {np.mean(lengths):.2f} ± {np.std(lengths):.2f} m")
     
     def call_plan_service(self) -> Dict[str, Any]:
@@ -643,6 +668,8 @@ class RVizBenchmarkNode(Node):
             return {
                 'success': False, 
                 'error': 'Service timeout',
+                'ts_ms': 0.0,
+                'ns_visited_nodes': 0,
                 'planning_time_ms': 0.0,
                 'expanded_nodes': 0,
             }
@@ -654,6 +681,8 @@ class RVizBenchmarkNode(Node):
             
             return {
                 'success': True,
+                'ts_ms': response.planning_time_ms,
+                'ns_visited_nodes': response.expanded_nodes,
                 'planning_time_ms': response.planning_time_ms,
                 'expanded_nodes': response.expanded_nodes,
                 'path_length_m': length,
@@ -665,6 +694,8 @@ class RVizBenchmarkNode(Node):
             return {
                 'success': False,
                 'error': response.message,
+                'ts_ms': response.planning_time_ms,
+                'ns_visited_nodes': response.expanded_nodes,
                 'planning_time_ms': response.planning_time_ms,
                 'expanded_nodes': response.expanded_nodes,
             }
@@ -707,33 +738,53 @@ class RVizBenchmarkNode(Node):
         
         cumulative_stats = {}
         if all_successful:
-            times = [t.planning_time_ms for t in all_successful]
+            times = [t.ts_ms for t in all_successful]
             lengths = [t.path_length_m for t in all_successful]
-            nodes = [t.expanded_nodes for t in all_successful]
+            nodes = [t.ns_visited_nodes for t in all_successful]
+            tp_values = [t.tp_ms for t in all_successful]
+            te_values = [t.te_ms for t in all_successful]
+            ts_stats = {
+                'mean': float(np.mean(times)),
+                'std': float(np.std(times)),
+                'min': float(np.min(times)),
+                'max': float(np.max(times)),
+                'median': float(np.median(times)),
+            }
+            ns_stats = {
+                'mean': float(np.mean(nodes)),
+                'std': float(np.std(nodes)),
+                'min': int(np.min(nodes)),
+                'max': int(np.max(nodes)),
+            }
             cumulative_stats = {
                 'total_runs': len(self.all_runs),
                 'total_trials': total_trials,
                 'total_successes': total_successes,
                 'success_rate': total_successes / total_trials,
-                'planning_time_ms': {
-                    'mean': float(np.mean(times)),
-                    'std': float(np.std(times)),
-                    'min': float(np.min(times)),
-                    'max': float(np.max(times)),
-                    'median': float(np.median(times)),
+                'tp_ms': {
+                    'mean': float(np.mean(tp_values)),
+                    'std': float(np.std(tp_values)),
+                    'min': float(np.min(tp_values)),
+                    'max': float(np.max(tp_values)),
+                    'median': float(np.median(tp_values)),
                 },
+                'te_ms': {
+                    'mean': float(np.mean(te_values)),
+                    'std': float(np.std(te_values)),
+                    'min': float(np.min(te_values)),
+                    'max': float(np.max(te_values)),
+                    'median': float(np.median(te_values)),
+                },
+                'ts_ms': ts_stats,
+                'planning_time_ms': ts_stats,
                 'path_length_m': {
                     'mean': float(np.mean(lengths)),
                     'std': float(np.std(lengths)),
                     'min': float(np.min(lengths)),
                     'max': float(np.max(lengths)),
                 },
-                'expanded_nodes': {
-                    'mean': float(np.mean(nodes)),
-                    'std': float(np.std(nodes)),
-                    'min': int(np.min(nodes)),
-                    'max': int(np.max(nodes)),
-                },
+                'ns_visited_nodes': ns_stats,
+                'expanded_nodes': ns_stats,
             }
         
         runs_data = []
@@ -746,8 +797,12 @@ class RVizBenchmarkNode(Node):
                 'trials': [
                     {
                         'success': t.success,
-                        'planning_time_ms': t.planning_time_ms,
-                        'expanded_nodes': t.expanded_nodes,
+                        'tp_ms': t.tp_ms,
+                        'te_ms': t.te_ms,
+                        'ts_ms': t.ts_ms,
+                        'ns_visited_nodes': t.ns_visited_nodes,
+                        'planning_time_ms': t.ts_ms,
+                        'expanded_nodes': t.ns_visited_nodes,
                         'path_length_m': t.path_length_m,
                         'num_waypoints': t.num_waypoints,
                         'error': t.error,
@@ -819,14 +874,14 @@ def main():
             print(f"总成功率: {total_successes/total_trials*100:.1f}%")
             
             if all_successful:
-                times = [t.planning_time_ms for t in all_successful]
+                times = [t.ts_ms for t in all_successful]
                 lengths = [t.path_length_m for t in all_successful]
-                nodes = [t.expanded_nodes for t in all_successful]
+                nodes = [t.ns_visited_nodes for t in all_successful]
                 print(f"\n纯算法性能 (不含ROS通信开销):")
-                print(f"  规划时间: {np.mean(times):.2f} ± {np.std(times):.2f} ms")
+                print(f"  [Ts] 路径搜索时间: {np.mean(times):.2f} ± {np.std(times):.2f} ms")
                 print(f"            min={np.min(times):.2f}, max={np.max(times):.2f}, median={np.median(times):.2f} ms")
                 print(f"  路径长度: {np.mean(lengths):.2f} ± {np.std(lengths):.2f} m")
-                print(f"  扩展节点: {np.mean(nodes):.0f} ± {np.std(nodes):.0f}")
+                print(f"  [Ns] 规划访问图节点数: {np.mean(nodes):.0f} ± {np.std(nodes):.0f}")
         
         filename = node.save_results()
         if filename:

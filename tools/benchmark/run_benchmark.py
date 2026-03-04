@@ -134,10 +134,13 @@ def convert_to_planning_results(results: List[dict]) -> List[PlanningResult]:
     """将字典结果转换为PlanningResult对象"""
     planning_results = []
     for r in results:
+        ts_ms = r.get('ts_ms', r.get('planning_time_ms', 0))
+        ns = r.get('ns_visited_nodes', r.get('expanded_nodes', r.get('nodes_explored')))
         pr = PlanningResult(
             success=r.get('success', False),
-            planning_time_ms=r.get('planning_time_ms', 0),
+            planning_time_ms=ts_ms,
             path_length_m=r.get('path_length_m'),
+            nodes_explored=ns,
             error_message=r.get('error')
         )
         if r.get('path') is not None:
@@ -153,7 +156,7 @@ def print_summary(all_results: Dict[str, Dict[str, List[dict]]]):
     print("=" * 70)
     
     # 表头
-    print(f"\n{'规划器':<10} {'场景':<12} {'成功率':<10} {'平均时间(ms)':<15} {'平均长度(m)':<12}")
+    print(f"\n{'规划器':<10} {'场景':<12} {'成功率':<10} {'平均Ts(ms)':<15} {'平均长度(m)':<12}")
     print("-" * 70)
     
     for planner_name, scene_results in all_results.items():
@@ -162,7 +165,7 @@ def print_summary(all_results: Dict[str, Dict[str, List[dict]]]):
             stats = aggregate_results(planning_results)
             
             success_rate = f"{stats['success_rate']*100:.1f}%"
-            avg_time = f"{stats.get('planning_time_mean_ms', 0):.2f}" if stats['success_rate'] > 0 else "N/A"
+            avg_time = f"{stats.get('ts_mean_ms', stats.get('planning_time_mean_ms', 0)):.2f}" if stats['success_rate'] > 0 else "N/A"
             avg_length = f"{stats.get('path_length_mean_m', 0):.2f}" if stats.get('path_length_mean_m') else "N/A"
             
             print(f"{planner_name:<10} {scene_name:<12} {success_rate:<10} {avg_time:<15} {avg_length:<12}")

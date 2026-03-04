@@ -54,7 +54,11 @@ SCENES = {
 
 # Evaluation metrics (from PCT Paper Section IV-C)
 METRICS = [
-    "planning_time_ms",      # Total planning time in milliseconds
+    "tp_ms",                 # Tp: point cloud pre-processing time
+    "te_ms",                 # Te: traversability estimation time
+    "ts_ms",                 # Ts: path searching time
+    "ns_visited_nodes",      # Ns: visited graph nodes for planning
+    "planning_time_ms",      # Legacy alias of Ts
     "path_length_m",         # Euclidean path length in meters
     "success_rate",          # Success rate (0-1)
     "jerk_integral",         # Trajectory smoothness (∫||jerk(t)||² dt)
