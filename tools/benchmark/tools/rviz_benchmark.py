@@ -279,6 +279,9 @@ class RVizBenchmarkNode(Node):
         print("="*70)
 
     def load_scene_cpp_fast(self):
+        benchmark_root = Path(__file__).resolve().parent.parent
+        if str(benchmark_root) not in sys.path:
+            sys.path.insert(0, str(benchmark_root))
         from converters.pcd_to_voxel import PCD_PATHS, _BENCHMARK_DIR
 
         pcd_rel = PCD_PATHS.get(self.scene_name.lower())
