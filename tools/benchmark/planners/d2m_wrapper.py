@@ -146,6 +146,8 @@ class D2MPlanner:
         if self._loaded_scene is None:
             return {
                 'success': False,
+                'tp_ms': 0.0,
+                'te_ms': 0.0,
                 'ts_ms': 0,
                 'ns_visited_nodes': 0,
                 'planning_time_ms': 0,
@@ -158,6 +160,8 @@ class D2MPlanner:
         # 完整实现需要启动ROS节点并通过topic交互
         return {
             'success': False,
+            'tp_ms': 0.0,
+            'te_ms': 0.0,
             'ts_ms': 0,
             'ns_visited_nodes': 0,
             'planning_time_ms': 0,
@@ -276,6 +280,8 @@ def parse_3d2m_output(log_content: str) -> List[dict]:
     for i, match in enumerate(matches):
         results.append({
             'trial': i,
+            'tp_ms': 0.0,
+            'te_ms': 0.0,
             'ts_ms': float(match),
             'ns_visited_nodes': 0,
             'planning_time_ms': float(match),

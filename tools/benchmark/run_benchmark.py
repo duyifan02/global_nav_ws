@@ -134,11 +134,15 @@ def convert_to_planning_results(results: List[dict]) -> List[PlanningResult]:
     """将字典结果转换为PlanningResult对象"""
     planning_results = []
     for r in results:
+        tp_ms = r.get('tp_ms', r.get('preprocessing_time_ms'))
+        te_ms = r.get('te_ms', r.get('traversability_time_ms'))
         ts_ms = r.get('ts_ms', r.get('planning_time_ms', 0))
         ns = r.get('ns_visited_nodes', r.get('expanded_nodes', r.get('nodes_explored')))
         pr = PlanningResult(
             success=r.get('success', False),
             planning_time_ms=ts_ms,
+            tp_ms=tp_ms,
+            te_ms=te_ms,
             path_length_m=r.get('path_length_m'),
             nodes_explored=ns,
             error_message=r.get('error')

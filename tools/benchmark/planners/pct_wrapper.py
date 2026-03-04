@@ -114,6 +114,8 @@ class PCTPlanner:
         if self._planner is None:
             return {
                 'success': False,
+                'tp_ms': 0.0,
+                'te_ms': 0.0,
                 'ts_ms': 0,
                 'ns_visited_nodes': 0,
                 'planning_time_ms': 0,
@@ -136,6 +138,8 @@ class PCTPlanner:
                 ts_ms = (t_end - t_start) * 1000
                 return {
                     'success': False,
+                    'tp_ms': 0.0,
+                    'te_ms': 0.0,
                     'ts_ms': ts_ms,
                     'ns_visited_nodes': 0,
                     'planning_time_ms': ts_ms,
@@ -150,6 +154,8 @@ class PCTPlanner:
             ts_ms = (t_end - t_start) * 1000
             return {
                 'success': True,
+                'tp_ms': 0.0,
+                'te_ms': 0.0,
                 'ts_ms': ts_ms,
                 'ns_visited_nodes': 0,
                 'planning_time_ms': ts_ms,
@@ -163,6 +169,8 @@ class PCTPlanner:
             ts_ms = (t_end - t_start) * 1000
             return {
                 'success': False,
+                'tp_ms': 0.0,
+                'te_ms': 0.0,
                 'ts_ms': ts_ms,
                 'ns_visited_nodes': 0,
                 'planning_time_ms': ts_ms,

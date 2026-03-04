@@ -188,6 +188,7 @@ class JPSPlanner:
         if not self._map_loaded:
             return {
                 'success': False,
+                'tp_ms': 0.0,
                 'ts_ms': 0,
                 'ns_visited_nodes': 0,
                 'te_ms': self._last_te_ms,
@@ -243,6 +244,7 @@ class JPSPlanner:
                 
                 return {
                     'success': True,
+                    'tp_ms': 0.0,
                     'ts_ms': ts_ms,
                     'ns_visited_nodes': ns,
                     'te_ms': self._last_te_ms,
@@ -257,6 +259,7 @@ class JPSPlanner:
                 ns = int(getattr(response, 'expanded_nodes', 0))
                 return {
                     'success': False,
+                    'tp_ms': 0.0,
                     'ts_ms': ts_ms,
                     'ns_visited_nodes': ns,
                     'te_ms': self._last_te_ms,
@@ -269,6 +272,7 @@ class JPSPlanner:
         else:
             return {
                 'success': False,
+                'tp_ms': 0.0,
                 'ts_ms': planning_time_ms,
                 'ns_visited_nodes': 0,
                 'te_ms': self._last_te_ms,
@@ -317,6 +321,7 @@ class JPSPlannerStandalone:
         """执行规划 (需要ROS2节点运行)"""
         return {
             'success': False,
+            'tp_ms': 0.0,
             'ts_ms': 0,
             'ns_visited_nodes': 0,
             'te_ms': 0,

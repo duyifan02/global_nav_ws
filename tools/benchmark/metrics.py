@@ -2,6 +2,8 @@
 Metrics calculation utilities for planner benchmarking.
 
 Implements evaluation metrics from PCT Paper Section IV-C:
+- Tp: point cloud pre-processing time (ms)
+- Te: traversability estimation time (ms)
 - Ts: path searching time (ms)
 - Path length (m)
 - Success rate (%)
@@ -18,6 +20,8 @@ class PlanningResult:
     """Result from a single planning trial"""
     success: bool
     planning_time_ms: float
+    tp_ms: Optional[float] = None
+    te_ms: Optional[float] = None
     path_length_m: Optional[float] = None
     jerk_integral: Optional[float] = None
     nodes_explored: Optional[int] = None
@@ -124,6 +128,24 @@ def aggregate_results(results: List[PlanningResult]) -> dict:
     
     if not successful:
         return stats
+
+    # Tp: point cloud pre-processing time statistics
+    tp_values = [r.tp_ms for r in successful if r.tp_ms is not None]
+    if tp_values:
+        stats["tp_mean_ms"] = np.mean(tp_values)
+        stats["tp_std_ms"] = np.std(tp_values)
+        stats["tp_median_ms"] = np.median(tp_values)
+        stats["tp_min_ms"] = np.min(tp_values)
+        stats["tp_max_ms"] = np.max(tp_values)
+
+    # Te: traversability estimation time statistics
+    te_values = [r.te_ms for r in successful if r.te_ms is not None]
+    if te_values:
+        stats["te_mean_ms"] = np.mean(te_values)
+        stats["te_std_ms"] = np.std(te_values)
+        stats["te_median_ms"] = np.median(te_values)
+        stats["te_min_ms"] = np.min(te_values)
+        stats["te_max_ms"] = np.max(te_values)
     
     # Ts: path searching time statistics
     planning_times = [r.planning_time_ms for r in successful]
@@ -200,7 +222,7 @@ def save_results_csv(results: List[PlanningResult],
         # Header
         writer.writerow([
             "planner", "scene", "trial", "success",
-            "ts_ms", "planning_time_ms", "path_length_m", "jerk_integral",
+            "tp_ms", "te_ms", "ts_ms", "planning_time_ms", "path_length_m", "jerk_integral",
             "ns_visited_nodes", "nodes_explored", "trajectory_duration_s", "error"
         ])
         
@@ -211,6 +233,8 @@ def save_results_csv(results: List[PlanningResult],
                 scene_name,
                 i,
                 result.success,
+                result.tp_ms if result.success else None,
+                result.te_ms if result.success else None,
                 result.planning_time_ms if result.success else None,
                 result.planning_time_ms if result.success else None,
                 result.path_length_m if result.success else None,
