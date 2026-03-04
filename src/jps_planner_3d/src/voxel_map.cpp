@@ -10,10 +10,8 @@ namespace jps_planner_3d
 {
 
 
-VoxelMap::VoxelMap(double resolution,
-                   double free_space_margin)
+VoxelMap::VoxelMap(double resolution)
 : resolution_(resolution)
-, free_space_margin_(free_space_margin)
 , grid_size_(std::make_tuple(0, 0, 0))
 , min_bound_(std::make_tuple(0.0, 0.0, 0.0))
 , max_bound_(std::make_tuple(0.0, 0.0, 0.0))
@@ -56,22 +54,15 @@ bool VoxelMap::updateFromPoints(const std::vector<std::tuple<float, float, float
         max_z = std::max(max_z, z);
     }
 
-    double expansion = free_space_margin_;
-    if (expansion < resolution_) {
-        expansion = resolution_;
-    } else {
-        expansion += resolution_;
-    }
-
     min_bound_ = std::make_tuple(
-        std::floor(min_x / resolution_) * resolution_ - expansion,
-        std::floor(min_y / resolution_) * resolution_ - expansion,
-        std::floor(min_z / resolution_) * resolution_ - expansion
+        std::floor(min_x / resolution_) * resolution_,
+        std::floor(min_y / resolution_) * resolution_,
+        std::floor(min_z / resolution_) * resolution_
     );
     max_bound_ = std::make_tuple(
-        std::ceil(max_x / resolution_) * resolution_ + expansion,
-        std::ceil(max_y / resolution_) * resolution_ + expansion,
-        std::ceil(max_z / resolution_) * resolution_ + expansion
+        std::ceil(max_x / resolution_) * resolution_,
+        std::ceil(max_y / resolution_) * resolution_,
+        std::ceil(max_z / resolution_) * resolution_
     );
     origin_ = min_bound_;
 

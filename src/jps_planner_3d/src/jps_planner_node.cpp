@@ -79,13 +79,13 @@ private:
     const std::shared_ptr<srv::SetVoxelMap::Request> request,
     std::shared_ptr<srv::SetVoxelMap::Response> response)
   {
-    RCLCPP_INFO(get_logger(), "set_voxel_map: occupied=%zu, res=%.3f, margin=%.3f, seed=(%.2f, %.2f, %.2f)",
-      request->occupied.size(), request->resolution, request->free_space_margin,
+    RCLCPP_INFO(get_logger(), "set_voxel_map: occupied=%zu, res=%.3f, seed=(%.2f, %.2f, %.2f)",
+      request->occupied.size(), request->resolution,
       request->seed_point.x, request->seed_point.y, request->seed_point.z);
 
-    if (request->resolution <= 0.0 || request->free_space_margin < 0.0) {
+    if (request->resolution <= 0.0) {
       response->success = false;
-      response->message = "Resolution must be > 0 and free_space_margin must be >= 0";
+      response->message = "Resolution must be > 0";
       response->surface_voxel_count = 0;
       return;
     }
@@ -111,7 +111,6 @@ private:
       voxel_map_->setConnectivityHeightThreshold(get_parameter("connectivity_height_threshold").as_double());
       voxel_map_->setSurfaceClearanceHeight(get_parameter("surface_clearance_height").as_double());
       voxel_map_->setDistanceFieldMaxDistance(get_parameter("distance_field_max_distance").as_int());
-      voxel_map_->setFreeSpaceMargin(request->free_space_margin);
 
       bool updated = voxel_map_->updateFromPoints(voxels, request->resolution, 
                                                    use_seed ? &seed_point : nullptr);

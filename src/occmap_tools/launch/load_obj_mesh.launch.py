@@ -32,11 +32,6 @@ def generate_launch_description():
         description='Auto-center mesh at origin'
     )
     
-    free_space_margin_arg = DeclareLaunchArgument(
-        'free_space_margin',
-        default_value='2.0',
-        description='Free space margin around obstacles in meters'
-    )
     
     max_service_points_arg = DeclareLaunchArgument(
         'max_service_points',
@@ -68,7 +63,6 @@ def generate_launch_description():
             'obj_path': LaunchConfiguration('obj_path'),
             'resolution': LaunchConfiguration('resolution'),
             'auto_center': LaunchConfiguration('auto_center'),
-            'free_space_margin': LaunchConfiguration('free_space_margin'),
             'max_service_points': LaunchConfiguration('max_service_points'),
             'truncate_service_points': LaunchConfiguration('truncate_service_points'),
             'publish_cloud': True,
@@ -81,7 +75,6 @@ def generate_launch_description():
         obj_path_arg,
         resolution_arg,
         auto_center_arg,
-        free_space_margin_arg,
         max_service_points_arg,
         truncate_arg,
         jps_planner_node,

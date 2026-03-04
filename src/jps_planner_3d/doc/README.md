@@ -28,7 +28,6 @@ ros2 launch jps_planner_3d jps_planner.launch.py config:=/path/to/your/config.ya
 ```bash
 ros2 service call /set_voxel_map nav_interfaces/srv/SetVoxelMap "{
   resolution: 0.2,
-  free_space_margin: 2.0,
   occupied: [
     {x: 1.0, y: 0.0, z: 0.0},
     {x: 1.0, y: 0.5, z: 0.0},
@@ -41,7 +40,6 @@ ros2 service call /set_voxel_map nav_interfaces/srv/SetVoxelMap "{
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `resolution` | float64 | 体素分辨率（米），必须 > 0 |
-| `free_space_margin` | float64 | 地图边界外扩距离（米） |
 | `occupied` | Point[] | 占据体素的世界坐标列表 |
 
 ### 4. 请求路径规划
@@ -78,7 +76,6 @@ ros2 service call /plan_path nav_interfaces/srv/PlanPath "{
 
 ```
 float64 resolution
-float64 free_space_margin
 geometry_msgs/Point[] occupied
 ---
 bool success
@@ -127,7 +124,7 @@ jps_planner_node:
 
 | 错误信息 | 原因 |
 |----------|------|
-| `Resolution must be > 0 and free_space_margin must be >= 0` | SetVoxelMap 参数无效 |
+| `Resolution must be > 0` | SetVoxelMap 参数无效 |
 | `Voxel map is not ready` | 未调用 SetVoxelMap 或地图为空 |
 | `Start or goal outside voxel map` | 起点/终点超出地图边界 |
 | `Start is not on a valid surface` | 起点不在可行走表面上 |

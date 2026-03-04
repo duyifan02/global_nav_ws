@@ -77,7 +77,6 @@ occmap_tools (Python)  →  jps_planner_3d (C++)  →  nav_interfaces (Services)
 ```bash
 ros2 service call /set_voxel_map nav_interfaces/srv/SetVoxelMap "{
   resolution: 0.1,
-  free_space_margin: 2.0,
   occupied: [{x: 1.0, y: 2.0, z: 0.0}, ...]
 }"
 ```
@@ -107,7 +106,6 @@ ros2 service call /get_distance_field nav_interfaces/srv/GetDistanceField
 | `obj_path` | *required* | Path to .obj file |
 | `resolution` | 0.2 | Voxel size (meters) |
 | `auto_center` | false | Center mesh at origin |
-| `free_space_margin` | 2.0 | Obstacle expansion (meters) |
 | `connectivity_height_threshold` | 0.6 | Max step height (meters) |
 | `surface_clearance_height` | 0.8 | Required vertical clearance (meters) |
 | `distance_field_max_distance` | 5 | Max distance in field (grid units) |

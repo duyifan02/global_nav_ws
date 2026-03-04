@@ -272,7 +272,6 @@ class RVizBenchmarkNode(Node):
         
         request = SetVoxelMap.Request()
         request.resolution = self.resolution
-        request.free_space_margin = 0.3
         
         request.seed_point.x = float(seed_point[0])
         request.seed_point.y = float(seed_point[1])

@@ -30,7 +30,6 @@ JPS_ROOT = PROJECT_ROOT / "global_nav_ws"
 class JPSConfig:
     """JPS规划器配置"""
     resolution: float = 0.1
-    free_space_margin: float = 0.3
     snap_to_surface: bool = False
     service_timeout: float = 10.0
 
@@ -44,7 +43,7 @@ class JPSPlanner:
     2. 调用 plan_path 服务执行规划
     
     服务接口:
-    - SetVoxelMap.srv: resolution, free_space_margin, occupied[] -> success, message
+    - SetVoxelMap.srv: resolution, occupied[] -> success, message
     - PlanPath.srv: start, goal, snap_to_surface -> success, message, path
     """
     
@@ -91,7 +90,6 @@ class JPSPlanner:
     
     def set_voxel_map(self, occupied_points: List[Tuple[float, float, float]],
                       resolution: float = None,
-                      free_space_margin: float = None,
                       seed_point: np.ndarray = None) -> bool:
         """
         设置体素地图
@@ -99,7 +97,6 @@ class JPSPlanner:
         Args:
             occupied_points: 占据体素中心坐标列表 [(x,y,z), ...]
             resolution: 体素分辨率
-            free_space_margin: 自由空间边距
             seed_point: BFS种子点世界坐标 [x, y, z]，指定可行走区域起点
                         应传入规划起始位置，确保BFS从正确位置扩展
 
@@ -115,7 +112,6 @@ class JPSPlanner:
 
         request = SetVoxelMap.Request()
         request.resolution = resolution or self.config.resolution
-        request.free_space_margin = free_space_margin or self.config.free_space_margin
 
         # 转换点格式
         for p in occupied_points:

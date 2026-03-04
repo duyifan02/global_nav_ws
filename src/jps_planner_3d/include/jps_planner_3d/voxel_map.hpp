@@ -24,12 +24,9 @@ public:
     /**
      * @brief 构造函数 (JPS V2接口)
      * 
-     * @param resolution 体素分辨率（米）
-     * @param free_space_margin 自由空间缓冲（米），障碍物边界外扩展的自由空间
-     * 
-     */
-    VoxelMap(double resolution = 0.2,
-             double free_space_margin = 2.0);
+    * @param resolution 体素分辨率（米）
+    */
+    VoxelMap(double resolution = 0.2);
 
     /**
      * @brief 析构函数
@@ -166,11 +163,6 @@ public:
     double getResolution() const { return resolution_; }
 
     /**
-     * @brief 设置自由空间缓冲
-     */
-    void setFreeSpaceMargin(double margin) { free_space_margin_ = margin; }
-
-    /**
      * @brief 获取距离场最大距离
      * 
      * @return 最大距离（网格单位）
@@ -275,7 +267,6 @@ private:
     void buildSurfaceGraph();
 
     double resolution_;                    // 体素分辨率
-    double free_space_margin_;              // 自由空间缓冲
     double connectivity_height_threshold_ = 0.6; // 连通性高度阈值
     double surface_clearance_height_ = 0.8; // Surface上方空气高度要求（米）
     int distance_field_max_distance_ = 5;   // 距离场最大距离（网格单位，最大255，使用8 bits存储）

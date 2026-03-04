@@ -1,5 +1,4 @@
 float64 resolution
-float64 free_space_margin
 geometry_msgs/Point[] occupied
 geometry_msgs/Point seed_point  # BFS建图种子点（可行走区域的起始点）
 ---

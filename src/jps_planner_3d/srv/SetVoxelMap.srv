@@ -1,5 +1,4 @@
 float64 resolution
-float64 free_space_margin
 geometry_msgs/Point[] occupied
 ---
 bool success

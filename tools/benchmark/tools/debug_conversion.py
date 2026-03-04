@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from converters.pcd_to_voxel import VoxelMap, read_pcd, voxelize_points, filter_outliers
 
 
-def simulate_cpp_origin_calculation(voxel_centers, resolution, free_space_margin=0.3):
+def simulate_cpp_origin_calculation(voxel_centers, resolution):
     """
     模拟C++ VoxelMap::updateFromPoints的origin计算逻辑
     
@@ -28,25 +28,18 @@ def simulate_cpp_origin_calculation(voxel_centers, resolution, free_space_margin
     min_x, min_y, min_z = voxel_centers.min(axis=0)
     max_x, max_y, max_z = voxel_centers.max(axis=0)
     
-    # C++ expansion logic (lines 59-64)
-    expansion = free_space_margin
-    if expansion < resolution:
-        expansion = resolution
-    else:
-        expansion += resolution
-    
     # C++ min_bound calculation (lines 66-70)
     min_bound = np.array([
-        np.floor(min_x / resolution) * resolution - expansion,
-        np.floor(min_y / resolution) * resolution - expansion,
-        np.floor(min_z / resolution) * resolution - expansion
+        np.floor(min_x / resolution) * resolution,
+        np.floor(min_y / resolution) * resolution,
+        np.floor(min_z / resolution) * resolution
     ])
     
     # C++ max_bound calculation (lines 71-75)
     max_bound = np.array([
-        np.ceil(max_x / resolution) * resolution + expansion,
-        np.ceil(max_y / resolution) * resolution + expansion,
-        np.ceil(max_z / resolution) * resolution + expansion
+        np.ceil(max_x / resolution) * resolution,
+        np.ceil(max_y / resolution) * resolution,
+        np.ceil(max_z / resolution) * resolution
     ])
     
     # C++ origin = min_bound (line 76)
@@ -77,12 +70,12 @@ def simulate_cpp_reindexing(voxel_centers, origin, resolution):
     return np.array(reindexed)
 
 
-def analyze_conversion(pcd_path, resolution=0.5, free_space_margin=0.3):
+def analyze_conversion(pcd_path, resolution=0.5):
     """分析完整的转换流程"""
     
     print("="*80)
     print(f"诊断PCD转换: {pcd_path}")
-    print(f"分辨率: {resolution}m, Free Space Margin: {free_space_margin}m")
+    print(f"分辨率: {resolution}m")
     print("="*80)
     
     # Step 1: Python转换器的处理
@@ -107,7 +100,7 @@ def analyze_conversion(pcd_path, resolution=0.5, free_space_margin=0.3):
     # Step 2: 模拟C++接收到voxel_centers后的处理
     print("\n[C++ VoxelMap模拟]")
     cpp_origin, cpp_grid_size, (cpp_min_bound, cpp_max_bound) = \
-        simulate_cpp_origin_calculation(vmap.voxel_centers, resolution, free_space_margin)
+        simulate_cpp_origin_calculation(vmap.voxel_centers, resolution)
     
     print(f"C++计算的origin: {cpp_origin}")
     print(f"C++计算的bounds:")
@@ -181,10 +174,10 @@ def analyze_conversion(pcd_path, resolution=0.5, free_space_margin=0.3):
         print(f"  Origin偏移: {cpp_origin}")
         print("\n问题原因:")
         print("  Python发送的voxel_centers假设origin=(0,0,0)")
-        print("  C++接收后计算新的origin(包含expansion)")
+        print("  C++接收后计算新的origin(基于floor/ceil)")
         print("  C++将坐标重新索引到新grid,导致位置偏移")
         print("\n推荐修复方案:")
-        print("  方案1: Python在发送前减去expansion后的origin")
+        print("  方案1: Python在发送前对齐C++的origin计算方式")
         print("  方案2: C++不重新计算origin,直接使用接收到的坐标")
         print("  方案3: 修改协议,发送voxel indices而非world coordinates")
     
@@ -193,14 +186,12 @@ def analyze_conversion(pcd_path, resolution=0.5, free_space_margin=0.3):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("用法: python debug_conversion.py <pcd_file> [resolution] [free_space_margin]")
+        print("用法: python debug_conversion.py <pcd_file> [resolution]")
         print("\n示例:")
         print("  python debug_conversion.py ../PCT_planner/rsc/pcd/building2_9.pcd")
-        print("  python debug_conversion.py ../PCT_planner/rsc/pcd/plaza3_10.pcd 0.15 0.3")
+        print("  python debug_conversion.py ../PCT_planner/rsc/pcd/plaza3_10.pcd 0.15")
         sys.exit(1)
     
     pcd_path = sys.argv[1]
     resolution = float(sys.argv[2]) if len(sys.argv) > 2 else 0.5
-    free_space_margin = float(sys.argv[3]) if len(sys.argv) > 3 else 0.3
-    
-    analyze_conversion(pcd_path, resolution, free_space_margin)
+    analyze_conversion(pcd_path, resolution)

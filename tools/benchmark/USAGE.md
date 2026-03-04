@@ -138,7 +138,6 @@ Launch 参数说明：
 | `obj_path` | OBJ 文件路径（必填） | — |
 | `resolution` | 体素分辨率 (m) | `0.05` |
 | `auto_center` | 自动将网格居中到原点 | `true` |
-| `free_space_margin` | 自由空间边距 (m) | `2.0` |
 | `max_service_points` | 发送到服务的最大点数 | `5000000` |
 | `truncate_service_points` | 超出时截断（否则报错退出） | `true` |
 

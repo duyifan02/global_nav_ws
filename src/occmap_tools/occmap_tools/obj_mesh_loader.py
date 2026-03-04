@@ -221,7 +221,6 @@ class ObjMeshLoader(Node):
         self.declare_parameter('resolution', 0.05)
         self.declare_parameter('origin', [0.0, 0.0, 0.0])
         self.declare_parameter('auto_center', False)  # Auto-center mesh at origin
-        self.declare_parameter('free_space_margin', 2.0)
         
         # Meta override
         self.declare_parameter('use_meta_resolution', True)
@@ -270,7 +269,6 @@ class ObjMeshLoader(Node):
 
         # Load parameters
         resolution = float(self.get_parameter('resolution').value)
-        free_space_margin = float(self.get_parameter('free_space_margin').value)
         origin = _param_to_float3(self.get_parameter('origin').value)
         auto_center = bool(self.get_parameter('auto_center').value)
 
@@ -371,7 +369,6 @@ class ObjMeshLoader(Node):
 
         req = SetVoxelMap.Request()
         req.resolution = float(resolution)
-        req.free_space_margin = float(free_space_margin)
         req.occupied = [Point(x=float(p[0]), y=float(p[1]), z=float(p[2])) for p in srv_pts]
 
         self.get_logger().info('Calling set_voxel_map service...')
