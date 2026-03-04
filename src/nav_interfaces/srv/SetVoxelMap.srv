@@ -6,3 +6,4 @@ bool success
 string message
 int64 surface_voxel_count  # 找到的可行走表面体素数量
 float64 traversability_time_ms  # Te: traversability estimation time (buildReachableMap)
+int64 map_memory_usage_bytes  # Size: memory usage of constructed scene representation

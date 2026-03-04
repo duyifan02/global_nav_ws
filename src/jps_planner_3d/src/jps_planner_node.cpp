@@ -12,7 +12,9 @@
 
 #include "jps_planner_3d/jps_3d.hpp"
 #include "jps_planner_3d/voxel_map.hpp"
+#include "jps_planner_3d/pcd_voxel_loader.hpp"
 #include "nav_interfaces/srv/set_voxel_map.hpp"
+#include "nav_interfaces/srv/load_pcd_map.hpp"
 #include "nav_interfaces/srv/plan_path.hpp"
 #include "nav_interfaces/srv/get_distance_field.hpp"
 
@@ -43,6 +45,10 @@ public:
     set_map_service_ = create_service<srv::SetVoxelMap>(
       "set_voxel_map",
       std::bind(&JpsPlannerNode::handleSetVoxelMap, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
+
+    load_pcd_map_service_ = create_service<srv::LoadPcdMap>(
+      "load_pcd_map",
+      std::bind(&JpsPlannerNode::handleLoadPcdMap, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 
     plan_service_ = create_service<srv::PlanPath>(
       "plan_path",
@@ -87,6 +93,8 @@ private:
       response->success = false;
       response->message = "Resolution must be > 0";
       response->surface_voxel_count = 0;
+      response->traversability_time_ms = 0.0;
+      response->map_memory_usage_bytes = 0;
       return;
     }
 
@@ -118,21 +126,125 @@ private:
         response->success = false;
         response->message = "Failed to update voxel map (empty data?)";
         response->surface_voxel_count = 0;
+        response->traversability_time_ms = 0.0;
+        response->map_memory_usage_bytes = 0;
         return;
       }
       rebuildPlanner();
     }
 
     const auto surface_count = voxel_map_->getValidSurfaceVoxels().size();
+    const auto map_memory_bytes = voxel_map_->getConstructedSceneMemoryUsageBytes();
     response->success = true;
     response->message = "Voxel map updated";
     response->surface_voxel_count = static_cast<int64_t>(surface_count);
     response->traversability_time_ms = voxel_map_->getTraversabilityTimeMs();
+    response->map_memory_usage_bytes = static_cast<int64_t>(map_memory_bytes);
     
     auto [nx, ny, nz] = voxel_map_->getGridSize();
     RCLCPP_INFO(get_logger(),
-      "Voxel map ready: occupied=%zu, surface=%zu, grid=%d x %d x %d, res=%.3f",
-      request->occupied.size(), surface_count, nx, ny, nz, request->resolution);
+      "Voxel map ready: occupied=%zu, surface=%zu, grid=%d x %d x %d, res=%.3f, map_mem=%.2f MB",
+      request->occupied.size(), surface_count, nx, ny, nz, request->resolution,
+      static_cast<double>(map_memory_bytes) / (1024.0 * 1024.0));
+  }
+
+  void handleLoadPcdMap(
+    const std::shared_ptr<rmw_request_id_t> /*unused*/,
+    const std::shared_ptr<srv::LoadPcdMap::Request> request,
+    std::shared_ptr<srv::LoadPcdMap::Response> response)
+  {
+    response->success = false;
+    response->message.clear();
+    response->raw_point_count = 0;
+    response->occupied_voxel_count = 0;
+    response->surface_voxel_count = 0;
+    response->preprocessing_time_ms = 0.0;
+    response->traversability_time_ms = 0.0;
+    response->map_memory_usage_bytes = 0;
+
+    if (request->resolution <= 0.0) {
+      response->message = "Resolution must be > 0";
+      return;
+    }
+    if (request->pcd_path.empty()) {
+      response->message = "pcd_path is empty";
+      return;
+    }
+
+    const int min_points_per_voxel = request->min_points_per_voxel > 0 ?
+      request->min_points_per_voxel : 1;
+    const double max_abs_coord = request->max_abs_coord > 0.0 ?
+      request->max_abs_coord : 200.0;
+
+    PcdVoxelizeResult voxelized;
+    std::string load_error;
+
+    auto t_pre_start = std::chrono::high_resolution_clock::now();
+    bool loaded = loadAndVoxelizePcd(
+      request->pcd_path,
+      request->resolution,
+      min_points_per_voxel,
+      max_abs_coord,
+      voxelized,
+      load_error);
+    auto t_pre_end = std::chrono::high_resolution_clock::now();
+
+    response->preprocessing_time_ms =
+      std::chrono::duration<double, std::milli>(t_pre_end - t_pre_start).count();
+
+    if (!loaded) {
+      response->message = "Failed to load/voxelize pcd: " + load_error;
+      return;
+    }
+
+    std::tuple<float, float, float> seed_point = {
+      static_cast<float>(request->seed_point.x),
+      static_cast<float>(request->seed_point.y),
+      static_cast<float>(request->seed_point.z)
+    };
+    bool use_seed =
+      (request->seed_point.x != 0.0 || request->seed_point.y != 0.0 || request->seed_point.z != 0.0);
+
+    {
+      std::lock_guard<std::mutex> lock(map_mutex_);
+      voxel_map_->setConnectivityHeightThreshold(get_parameter("connectivity_height_threshold").as_double());
+      voxel_map_->setSurfaceClearanceHeight(get_parameter("surface_clearance_height").as_double());
+      voxel_map_->setDistanceFieldMaxDistance(get_parameter("distance_field_max_distance").as_int());
+
+      bool updated = voxel_map_->updateFromPoints(
+        voxelized.occupied_voxels,
+        request->resolution,
+        use_seed ? &seed_point : nullptr);
+      if (!updated) {
+        response->message = "Failed to update voxel map from voxelized pcd";
+        return;
+      }
+      rebuildPlanner();
+    }
+
+    const auto occupied_count = voxelized.occupied_voxels.size();
+    const auto surface_count = voxel_map_->getValidSurfaceVoxels().size();
+    const auto map_memory_bytes = voxel_map_->getConstructedSceneMemoryUsageBytes();
+
+    response->success = true;
+    response->message = "PCD loaded and voxel map updated";
+    response->raw_point_count = voxelized.raw_point_count;
+    response->occupied_voxel_count = static_cast<int64_t>(occupied_count);
+    response->surface_voxel_count = static_cast<int64_t>(surface_count);
+    response->traversability_time_ms = voxel_map_->getTraversabilityTimeMs();
+    response->map_memory_usage_bytes = static_cast<int64_t>(map_memory_bytes);
+
+    auto [nx, ny, nz] = voxel_map_->getGridSize();
+    RCLCPP_INFO(
+      get_logger(),
+      "load_pcd_map: raw=%ld, occupied=%zu, surface=%zu, Tp=%.2fms, Te=%.2fms, grid=%d x %d x %d, map_mem=%.2f MB",
+      response->raw_point_count,
+      occupied_count,
+      surface_count,
+      response->preprocessing_time_ms,
+      response->traversability_time_ms,
+      nx, ny, nz,
+      static_cast<double>(map_memory_bytes) / (1024.0 * 1024.0));
   }
 
   void handlePlanPath(
@@ -158,10 +270,13 @@ private:
       response->success = false;
       response->message = "Voxel map is not ready";
       response->planning_time_ms = 0.0;
+      response->traversability_time_ms = 0.0;
       response->expanded_nodes = 0;
       response->memory_usage_bytes = 0;
       return;
     }
+
+    const auto map_memory_bytes = static_cast<int64_t>(map_copy->getConstructedSceneMemoryUsageBytes());
 
     const auto & s = request->start.position;
     const auto & g = request->goal.position;
@@ -182,8 +297,9 @@ private:
       response->success = false;
       response->message = "Planner returned empty path";
       response->planning_time_ms = planning_time_ms;
+      response->traversability_time_ms = map_copy->getTraversabilityTimeMs();
       response->expanded_nodes = expanded_nodes;
-      response->memory_usage_bytes = 0;
+      response->memory_usage_bytes = map_memory_bytes;
       RCLCPP_WARN(get_logger(), "plan_path failed: %s (%.2f ms) expanded=%ld",
                   response->message.c_str(), planning_time_ms, expanded_nodes);
       return;
@@ -208,8 +324,9 @@ private:
     response->message = "Path planned";
     response->path = std::move(ros_path);
     response->planning_time_ms = planning_time_ms;
+    response->traversability_time_ms = map_copy->getTraversabilityTimeMs();
     response->expanded_nodes = expanded_nodes;
-    response->memory_usage_bytes = 0;
+    response->memory_usage_bytes = map_memory_bytes;
 
     RCLCPP_INFO(get_logger(), "plan_path success: poses=%zu, time=%.2f ms, expanded=%ld", 
                 path.size(), planning_time_ms, expanded_nodes);
@@ -275,6 +392,7 @@ private:
   std::mutex map_mutex_;
 
   rclcpp::Service<srv::SetVoxelMap>::SharedPtr set_map_service_;
+  rclcpp::Service<srv::LoadPcdMap>::SharedPtr load_pcd_map_service_;
   rclcpp::Service<srv::PlanPath>::SharedPtr plan_service_;
   rclcpp::Service<srv::GetDistanceField>::SharedPtr get_distance_field_service_;
 };

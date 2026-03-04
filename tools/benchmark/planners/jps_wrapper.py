@@ -51,10 +51,13 @@ class JPSPlanner:
         self.config = config or JPSConfig()
         self._node = None
         self._set_map_client = None
+        self._load_pcd_client = None
         self._plan_client = None
         self._map_loaded = False
         self._loaded_scene = None
+        self._last_tp_ms = 0.0
         self._last_te_ms = 0.0
+        self._last_map_memory_usage_bytes = 0
         
     def init_ros2(self) -> bool:
         """初始化ROS2节点"""
@@ -67,10 +70,13 @@ class JPSPlanner:
             self._node = rclpy.create_node('jps_benchmark_client')
             
             # 导入服务类型
-            from nav_interfaces.srv import SetVoxelMap, PlanPath
+            from nav_interfaces.srv import SetVoxelMap, LoadPcdMap, PlanPath
             
             self._set_map_client = self._node.create_client(
                 SetVoxelMap, '/set_voxel_map'
+            )
+            self._load_pcd_client = self._node.create_client(
+                LoadPcdMap, '/load_pcd_map'
             )
             self._plan_client = self._node.create_client(
                 PlanPath, '/plan_path'
@@ -80,6 +86,9 @@ class JPSPlanner:
             if not self._set_map_client.wait_for_service(timeout_sec=5.0):
                 print("[JPS] set_voxel_map service not available")
                 return False
+            if not self._load_pcd_client.wait_for_service(timeout_sec=1.0):
+                self._load_pcd_client = None
+                print("[JPS] load_pcd_map service not available, fallback to Python preprocessing")
             if not self._plan_client.wait_for_service(timeout_sec=5.0):
                 print("[JPS] plan_path service not available")
                 return False
@@ -136,13 +145,68 @@ class JPSPlanner:
             if not response.success:
                 print(f"[JPS] set_voxel_map failed: {response.message}")
             else:
+                self._last_tp_ms = 0.0
                 self._last_te_ms = float(getattr(response, 'traversability_time_ms', 0.0))
+                self._last_map_memory_usage_bytes = int(getattr(response, 'map_memory_usage_bytes', 0))
                 print(f"[JPS] surface voxels: {response.surface_voxel_count}, "
-                      f"Te={self._last_te_ms:.1f}ms")
+                      f"Te={self._last_te_ms:.1f}ms, "
+                      f"Size={self._last_map_memory_usage_bytes} bytes")
             return response.success
         else:
             print("[JPS] set_voxel_map service call failed")
             return False
+
+    def load_pcd_map_cpp(self, scene_name: str, resolution: float, seed_point: np.ndarray = None) -> bool:
+        if self._load_pcd_client is None:
+            return False
+
+        try:
+            from nav_interfaces.srv import LoadPcdMap
+            from converters.pcd_to_voxel import PCD_PATHS, _BENCHMARK_DIR
+        except Exception as e:
+            print(f"[JPS] Failed to import fast loader deps: {e}")
+            return False
+
+        pcd_rel_path = PCD_PATHS.get(scene_name.lower())
+        if pcd_rel_path is None:
+            print(f"[JPS] Unknown scene for fast loader: {scene_name}")
+            return False
+
+        request = LoadPcdMap.Request()
+        request.pcd_path = str(Path(_BENCHMARK_DIR) / pcd_rel_path)
+        request.resolution = float(resolution)
+        request.min_points_per_voxel = 1
+        request.max_abs_coord = 200.0
+
+        if seed_point is not None:
+            request.seed_point.x = float(seed_point[0])
+            request.seed_point.y = float(seed_point[1])
+            request.seed_point.z = float(seed_point[2]) if len(seed_point) > 2 else 0.0
+
+        future = self._load_pcd_client.call_async(request)
+        rclpy.spin_until_future_complete(self._node, future, timeout_sec=max(30.0, self.config.service_timeout))
+
+        if future.result() is None:
+            print("[JPS] load_pcd_map service call failed")
+            return False
+
+        response = future.result()
+        self._map_loaded = response.success
+        if not response.success:
+            print(f"[JPS] load_pcd_map failed: {response.message}")
+            return False
+
+        self._last_tp_ms = float(getattr(response, 'preprocessing_time_ms', 0.0))
+        self._last_te_ms = float(getattr(response, 'traversability_time_ms', 0.0))
+        self._last_map_memory_usage_bytes = int(getattr(response, 'map_memory_usage_bytes', 0))
+
+        print(
+            f"[JPS] fast map loaded: raw={response.raw_point_count}, "
+            f"occupied={response.occupied_voxel_count}, surface={response.surface_voxel_count}, "
+            f"Tp={self._last_tp_ms:.1f}ms, Te={self._last_te_ms:.1f}ms, "
+            f"Size={self._last_map_memory_usage_bytes} bytes"
+        )
+        return True
     
     def load_scene(self, scene_name: str, voxel_map=None, seed_point: np.ndarray = None) -> bool:
         """
@@ -156,13 +220,16 @@ class JPSPlanner:
         Returns:
             是否成功
         """
-        if voxel_map is None:
-            from converters.pcd_to_voxel import get_voxel_map
-            voxel_map = get_voxel_map(scene_name, self.config.resolution)
-
         # 使用规划起始位置作为BFS种子（论文：以机器人位置为种子）
         if seed_point is None:
             seed_point = SCENE_ENDPOINTS.get(scene_name.lower(), {}).get("start")
+
+        if voxel_map is None:
+            if self.load_pcd_map_cpp(scene_name, self.config.resolution, seed_point=seed_point):
+                self._loaded_scene = scene_name.lower()
+                return True
+            from converters.pcd_to_voxel import get_voxel_map
+            voxel_map = get_voxel_map(scene_name, self.config.resolution)
 
         success = self.set_voxel_map(
             voxel_map.occupied_list,
@@ -188,10 +255,11 @@ class JPSPlanner:
         if not self._map_loaded:
             return {
                 'success': False,
-                'tp_ms': 0.0,
+                'tp_ms': self._last_tp_ms,
                 'ts_ms': 0,
                 'ns_visited_nodes': 0,
                 'te_ms': self._last_te_ms,
+                'memory_usage_bytes': self._last_map_memory_usage_bytes,
                 'planning_time_ms': 0,
                 'expanded_nodes': 0,
                 'path': None,
@@ -244,10 +312,11 @@ class JPSPlanner:
                 
                 return {
                     'success': True,
-                    'tp_ms': 0.0,
+                    'tp_ms': self._last_tp_ms,
                     'ts_ms': ts_ms,
                     'ns_visited_nodes': ns,
                     'te_ms': self._last_te_ms,
+                    'memory_usage_bytes': int(getattr(response, 'memory_usage_bytes', self._last_map_memory_usage_bytes)),
                     'planning_time_ms': ts_ms,
                     'expanded_nodes': ns,
                     'path': path,
@@ -259,10 +328,11 @@ class JPSPlanner:
                 ns = int(getattr(response, 'expanded_nodes', 0))
                 return {
                     'success': False,
-                    'tp_ms': 0.0,
+                    'tp_ms': self._last_tp_ms,
                     'ts_ms': ts_ms,
                     'ns_visited_nodes': ns,
                     'te_ms': self._last_te_ms,
+                    'memory_usage_bytes': int(getattr(response, 'memory_usage_bytes', self._last_map_memory_usage_bytes)),
                     'planning_time_ms': ts_ms,
                     'expanded_nodes': ns,
                     'path': None,
@@ -272,10 +342,11 @@ class JPSPlanner:
         else:
             return {
                 'success': False,
-                'tp_ms': 0.0,
+                'tp_ms': self._last_tp_ms,
                 'ts_ms': planning_time_ms,
                 'ns_visited_nodes': 0,
                 'te_ms': self._last_te_ms,
+                'memory_usage_bytes': self._last_map_memory_usage_bytes,
                 'planning_time_ms': planning_time_ms,
                 'expanded_nodes': 0,
                 'path': None,
@@ -325,6 +396,7 @@ class JPSPlannerStandalone:
             'ts_ms': 0,
             'ns_visited_nodes': 0,
             'te_ms': 0,
+            'memory_usage_bytes': 0,
             'planning_time_ms': 0,
             'expanded_nodes': 0,
             'path': None,

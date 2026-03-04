@@ -114,6 +114,27 @@ bool VoxelMap::isReady() const
     return nx > 0 && ny > 0 && nz > 0;
 }
 
+size_t VoxelMap::getConstructedSceneMemoryUsageBytes() const
+{
+    size_t bytes = 0;
+
+    bytes += voxel_array_.capacity() * sizeof(uint8_t);
+    bytes += valid_surface_voxels_.capacity() * sizeof(std::tuple<int, int, int>);
+    bytes += surface_array_.capacity() * sizeof(uint8_t);
+    bytes += surface_graph_.capacity() * sizeof(SurfaceNode);
+    bytes += all_neighbors_.capacity() * sizeof(int);
+
+    bytes += distance_map_.bucket_count() * sizeof(void*);
+    bytes += distance_map_.size() * sizeof(std::unordered_map<size_t, uint8_t>::value_type);
+    bytes += distance_map_.size() * (sizeof(void*) + sizeof(size_t));
+
+    bytes += coord_to_surface_idx_.bucket_count() * sizeof(void*);
+    bytes += coord_to_surface_idx_.size() * sizeof(std::unordered_map<size_t, int>::value_type);
+    bytes += coord_to_surface_idx_.size() * (sizeof(void*) + sizeof(size_t));
+
+    return bytes;
+}
+
 bool VoxelMap::isOccupied(double x, double y, double z) const
 {
     auto grid_idx = worldToGrid(x, y, z);

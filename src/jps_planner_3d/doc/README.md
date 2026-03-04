@@ -77,9 +77,32 @@ ros2 service call /plan_path nav_interfaces/srv/PlanPath "{
 ```
 float64 resolution
 geometry_msgs/Point[] occupied
+geometry_msgs/Point seed_point
 ---
 bool success
 string message
+int64 surface_voxel_count
+float64 traversability_time_ms
+int64 map_memory_usage_bytes
+```
+
+### LoadPcdMap.srv
+
+```
+string pcd_path
+float64 resolution
+int32 min_points_per_voxel
+float64 max_abs_coord
+geometry_msgs/Point seed_point
+---
+bool success
+string message
+int64 raw_point_count
+int64 occupied_voxel_count
+int64 surface_voxel_count
+float64 preprocessing_time_ms
+float64 traversability_time_ms
+int64 map_memory_usage_bytes
 ```
 
 ### PlanPath.srv
@@ -92,6 +115,10 @@ bool snap_to_surface
 bool success
 string message
 nav_msgs/Path path
+float64 planning_time_ms
+float64 traversability_time_ms
+int64 expanded_nodes
+int64 memory_usage_bytes
 ```
 
 ---

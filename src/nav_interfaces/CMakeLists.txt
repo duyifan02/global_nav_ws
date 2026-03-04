@@ -8,6 +8,7 @@ find_package(nav_msgs REQUIRED)
 
 set(srv_files
   srv/SetVoxelMap.srv
+  srv/LoadPcdMap.srv
   srv/PlanPath.srv
   srv/GetDistanceField.srv
 )

@@ -208,6 +208,14 @@ public:
     double getTraversabilityTimeMs() const { return traversability_time_ms_; }
 
     /**
+     * @brief 获取构建后场景表示占用内存估算（字节）
+     * 
+     * 统计地图构建后用于规划的主要数据结构（surface、distance field、graph 等）
+     * 的近似内存占用，不包含进程其他组件与分配器额外开销。
+     */
+    size_t getConstructedSceneMemoryUsageBytes() const;
+
+    /**
      * @brief Surface Graph 节点结构（扁平化邻接表）
      * 
      * 用于A*搜索的优化数据结构，预计算邻居关系

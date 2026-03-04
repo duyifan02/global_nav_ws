@@ -43,7 +43,7 @@ from geometry_msgs.msg import Point, PointStamped, Pose
 from sensor_msgs.msg import PointCloud2, PointField
 from nav_msgs.msg import Path as NavPath
 from visualization_msgs.msg import Marker, MarkerArray
-from nav_interfaces.srv import SetVoxelMap, PlanPath, GetDistanceField
+from nav_interfaces.srv import SetVoxelMap, LoadPcdMap, PlanPath, GetDistanceField
 
 
 class SelectionState(Enum):
@@ -107,6 +107,7 @@ class RunResult:
         if not successful:
             ts_stats = {'mean': 0, 'std': 0, 'min': 0, 'max': 0}
             ns_stats = {'mean': 0, 'std': 0, 'min': 0, 'max': 0}
+            size_stats = {'mean': 0, 'std': 0, 'min': 0, 'max': 0}
             return {
                 'success_rate': 0.0,
                 'ts_ms': ts_stats,
@@ -114,12 +115,14 @@ class RunResult:
                 'path_length_m': {'mean': 0, 'std': 0, 'min': 0, 'max': 0},
                 'ns_visited_nodes': ns_stats,
                 'expanded_nodes': ns_stats,
+                'memory_usage_bytes': size_stats,
             }
         
         times = [t.ts_ms for t in successful]
         lengths = [t.path_length_m for t in successful]
         nodes = [t.ns_visited_nodes for t in successful]
         total_times = [t.total_time_ms for t in successful]
+        sizes = [t.memory_usage_bytes for t in successful]
 
         ts_stats = {
             'mean': np.mean(times),
@@ -146,6 +149,12 @@ class RunResult:
             },
             'ns_visited_nodes': ns_stats,
             'expanded_nodes': ns_stats,
+            'memory_usage_bytes': {
+                'mean': np.mean(sizes),
+                'std': np.std(sizes),
+                'min': np.min(sizes),
+                'max': np.max(sizes),
+            },
             'total_time_ms': {
                 'mean': np.mean(total_times),
                 'std': np.std(total_times),
@@ -157,22 +166,24 @@ class RunResult:
 
 class RVizBenchmarkNode(Node):
     def __init__(self, scene_name: str, resolution: float, num_trials: int,
-                 preloaded: bool = False):
+                 preloaded: bool = False, cpp_fast_load: bool = False):
         super().__init__('rviz_benchmark')
 
         self.scene_name = scene_name
         self.resolution = resolution
         self.num_trials = num_trials
         self.preloaded = preloaded  # True: 地图已由外部节点加载（如 obj_mesh_loader）
+        self.cpp_fast_load = cpp_fast_load and (not preloaded)
 
         # preloaded 模式跳过种子选择，直接等待起点
-        self.state = SelectionState.WAITING_START if preloaded else SelectionState.WAITING_SEED
+        self.state = SelectionState.WAITING_START if (preloaded or self.cpp_fast_load) else SelectionState.WAITING_SEED
         self.seed_point: Optional[np.ndarray] = None
         self.start_point: Optional[np.ndarray] = None
         self.goal_point: Optional[np.ndarray] = None
         self.voxel_centers: Optional[np.ndarray] = None   # PCD 模式下有值
         self.occupied_list: Optional[List] = None
         self.surface_points: Optional[np.ndarray] = None  # 可通行区域，用于检查选点
+        self._map_memory_usage_bytes: int = 0
 
         self.all_runs: List[RunResult] = []
         self.map_info: Dict[str, Any] = {}
@@ -196,6 +207,7 @@ class RVizBenchmarkNode(Node):
             callback_group=self.cb_group)
 
         self.set_map_client = self.create_client(SetVoxelMap, '/set_voxel_map', callback_group=self.cb_group)
+        self.load_pcd_client = self.create_client(LoadPcdMap, '/load_pcd_map', callback_group=self.cb_group)
         self.plan_client = self.create_client(PlanPath, '/plan_path', callback_group=self.cb_group)
         self.get_surface_client = self.create_client(GetDistanceField, '/get_distance_field', callback_group=self.cb_group)
 
@@ -209,6 +221,12 @@ class RVizBenchmarkNode(Node):
             self.get_surface_client.wait_for_service(timeout_sec=5.0)
             self.map_info = {'scene': scene_name, 'resolution': resolution,
                              'source': 'preloaded (obj_mesh_loader)'}
+            self.publish_surface()
+        elif self.cpp_fast_load:
+            self.get_surface_client.wait_for_service(timeout_sec=5.0)
+            if not self.load_pcd_client.wait_for_service(timeout_sec=5.0):
+                raise RuntimeError('load_pcd_map service not available. Please restart jps_planner_node after rebuilding.')
+            self.load_scene_cpp_fast()
             self.publish_surface()
         else:
             self.load_scene()
@@ -224,13 +242,15 @@ class RVizBenchmarkNode(Node):
         print(f"分辨率: {self.resolution}m")
         if self.preloaded:
             print("模式: Preloaded (地图已由外部节点加载，如 obj_mesh_loader)")
+        elif self.cpp_fast_load:
+            print("模式: C++ Fast Load (load_pcd_map，跳过 Python 预处理)")
         else:
             print(f"体素数: {self.map_info.get('num_voxels', 'N/A')}")
         print(f"每组测试次数: {self.num_trials}")
         print()
         print("RViz2设置:")
         print("  1. Fixed Frame: map")
-        if not self.preloaded:
+        if not self.preloaded and not self.cpp_fast_load:
             print("  2. Add PointCloud2: /benchmark/pointcloud (原始点云，白色)")
         print("  2. Add PointCloud2: /benchmark/surface (可通行区域，绿色)")
         print("  3. Add Path: /benchmark/path")
@@ -241,7 +261,7 @@ class RVizBenchmarkNode(Node):
         print("  ⚠️  否则会规划失败 (Planning was cancelled)")
         print()
         print("操作流程:")
-        if self.preloaded:
+        if self.preloaded or self.cpp_fast_load:
             print("  1. 点击选择【导航起点】(绿色) - 必须在绿色点云上！")
             print("  2. 点击选择【导航终点】(红色) - 必须在绿色点云上！")
             print("  3. 继续点击选择新的起点/终点")
@@ -257,6 +277,46 @@ class RVizBenchmarkNode(Node):
             print()
             print("当前状态: 等待选择建图种子点...")
         print("="*70)
+
+    def load_scene_cpp_fast(self):
+        from converters.pcd_to_voxel import PCD_PATHS, _BENCHMARK_DIR
+
+        pcd_rel = PCD_PATHS.get(self.scene_name.lower())
+        if pcd_rel is None:
+            raise RuntimeError(f"Unknown scene: {self.scene_name}")
+
+        pcd_path = str(Path(_BENCHMARK_DIR) / pcd_rel)
+        request = LoadPcdMap.Request()
+        request.pcd_path = pcd_path
+        request.resolution = float(self.resolution)
+        request.min_points_per_voxel = 1
+        request.max_abs_coord = 200.0
+
+        print(f"[LOG] C++快速加载: {pcd_path}")
+        response = self.load_pcd_client.call(request)
+        if response is None or not response.success:
+            msg = response.message if response else "No response"
+            raise RuntimeError(f"load_pcd_map failed: {msg}")
+
+        self._preprocessing_time_ms = float(getattr(response, 'preprocessing_time_ms', 0.0))
+        self._traversability_time_ms = float(getattr(response, 'traversability_time_ms', 0.0))
+        self._map_memory_usage_bytes = int(getattr(response, 'map_memory_usage_bytes', 0))
+
+        self.map_info = {
+            'scene': self.scene_name,
+            'resolution': self.resolution,
+            'source': 'cpp_fast_load',
+            'raw_point_count': int(getattr(response, 'raw_point_count', 0)),
+            'num_voxels': int(getattr(response, 'occupied_voxel_count', 0)),
+            'surface_voxel_count': int(getattr(response, 'surface_voxel_count', 0)),
+        }
+
+        print(
+            f"[LOG] C++预处理完成: raw={self.map_info['raw_point_count']}, "
+            f"occupied={self.map_info['num_voxels']}, surface={self.map_info['surface_voxel_count']}, "
+            f"Tp={self._preprocessing_time_ms:.2f}ms, Te={self._traversability_time_ms:.2f}ms, "
+            f"Size={self._map_memory_usage_bytes} bytes"
+        )
     
     def load_scene(self):
         import time as _time
@@ -327,9 +387,12 @@ class RVizBenchmarkNode(Node):
             surface_count = response.surface_voxel_count
             # 保存可通行性估计时间 (Te)
             self._traversability_time_ms = response.traversability_time_ms
+            estimated_bytes = len(self.occupied_list) if self.occupied_list else 0
+            self._map_memory_usage_bytes = int(getattr(response, 'map_memory_usage_bytes', estimated_bytes))
             self.get_logger().info(f"JPS地图设置成功，可行走表面体素: {surface_count}, Te: {self._traversability_time_ms:.2f}ms")
             print(f"[LOG] 建图完成！可行走表面体素: {surface_count}")
             print(f"[LOG] 可通行性估计时间 (Te): {self._traversability_time_ms:.2f}ms")
+            print(f"[LOG] 场景表示内存 (Size): {self._map_memory_usage_bytes} bytes")
             print("[LOG] 正在获取并发布 surface...")
             t4 = _time.time()
             self.publish_surface()
@@ -549,8 +612,10 @@ class RVizBenchmarkNode(Node):
         # 可通行性估计时间 (Te)
         te_ms = getattr(self, '_traversability_time_ms', 0.0)
         
-        # 内存使用估算 (Size) - 每个体素约 1 byte (surface_array)
-        memory_usage_bytes = len(self.occupied_list) if self.occupied_list else 0
+        # Size: 构建后场景表示内存（优先使用服务回传）
+        memory_usage_bytes = int(getattr(self, '_map_memory_usage_bytes', 0))
+        if memory_usage_bytes <= 0:
+            memory_usage_bytes = len(self.occupied_list) if self.occupied_list else 0
         
         print(f"\n{'='*60}")
         print(f"运行 {self.num_trials} 次规划测试")
@@ -565,6 +630,11 @@ class RVizBenchmarkNode(Node):
         
         for i in range(self.num_trials):
             result = self.call_plan_service()
+
+            if result.get('memory_usage_bytes', 0) > 0:
+                memory_usage_bytes = int(result['memory_usage_bytes'])
+            if result.get('te_ms', 0.0) > 0.0 and te_ms <= 0.0:
+                te_ms = float(result['te_ms'])
 
             # Tall = Tp + Te + Ts + To (纯算法总时间，不含ROS通信)
             total_time_ms = tp_ms + te_ms + result['ts_ms'] + 0.0
@@ -672,6 +742,8 @@ class RVizBenchmarkNode(Node):
                 'ns_visited_nodes': 0,
                 'planning_time_ms': 0.0,
                 'expanded_nodes': 0,
+                'memory_usage_bytes': 0,
+                'te_ms': 0.0,
             }
         
         if response.success:
@@ -685,6 +757,8 @@ class RVizBenchmarkNode(Node):
                 'ns_visited_nodes': response.expanded_nodes,
                 'planning_time_ms': response.planning_time_ms,
                 'expanded_nodes': response.expanded_nodes,
+                'memory_usage_bytes': int(getattr(response, 'memory_usage_bytes', 0)),
+                'te_ms': float(getattr(response, 'traversability_time_ms', 0.0)),
                 'path_length_m': length,
                 'num_waypoints': len(path),
                 'path': path,
@@ -698,6 +772,8 @@ class RVizBenchmarkNode(Node):
                 'ns_visited_nodes': response.expanded_nodes,
                 'planning_time_ms': response.planning_time_ms,
                 'expanded_nodes': response.expanded_nodes,
+                'memory_usage_bytes': int(getattr(response, 'memory_usage_bytes', 0)),
+                'te_ms': float(getattr(response, 'traversability_time_ms', 0.0)),
             }
     
     def publish_path(self, path_points):
@@ -743,6 +819,7 @@ class RVizBenchmarkNode(Node):
             nodes = [t.ns_visited_nodes for t in all_successful]
             tp_values = [t.tp_ms for t in all_successful]
             te_values = [t.te_ms for t in all_successful]
+            size_values = [t.memory_usage_bytes for t in all_successful]
             ts_stats = {
                 'mean': float(np.mean(times)),
                 'std': float(np.std(times)),
@@ -783,6 +860,12 @@ class RVizBenchmarkNode(Node):
                     'min': float(np.min(lengths)),
                     'max': float(np.max(lengths)),
                 },
+                'memory_usage_bytes': {
+                    'mean': float(np.mean(size_values)),
+                    'std': float(np.std(size_values)),
+                    'min': int(np.min(size_values)),
+                    'max': int(np.max(size_values)),
+                },
                 'ns_visited_nodes': ns_stats,
                 'expanded_nodes': ns_stats,
             }
@@ -803,6 +886,7 @@ class RVizBenchmarkNode(Node):
                         'ns_visited_nodes': t.ns_visited_nodes,
                         'planning_time_ms': t.ts_ms,
                         'expanded_nodes': t.ns_visited_nodes,
+                        'memory_usage_bytes': t.memory_usage_bytes,
                         'path_length_m': t.path_length_m,
                         'num_waypoints': t.num_waypoints,
                         'error': t.error,
@@ -838,12 +922,15 @@ def main():
     parser.add_argument('--trials', type=int, default=100, help='每组起终点的测试次数')
     parser.add_argument('--preloaded', action='store_true',
                         help='地图已由外部节点加载（如 obj_mesh_loader），跳过种子点选择和点云发布')
+    parser.add_argument('--cpp-fast-load', action='store_true',
+                        help='使用 C++ load_pcd_map 服务进行快速预处理并建图（跳过 Python PCD 体素化）')
     args = parser.parse_args()
 
     rclpy.init()
 
     node = RVizBenchmarkNode(args.scene, args.resolution, args.trials,
-                             preloaded=args.preloaded)
+                             preloaded=args.preloaded,
+                             cpp_fast_load=args.cpp_fast_load)
     
     # 使用 MultiThreadedExecutor 支持在回调中等待服务响应
     executor = MultiThreadedExecutor(num_threads=4)

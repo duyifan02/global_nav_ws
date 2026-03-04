@@ -20,6 +20,7 @@ include_directories(
 add_library(${PROJECT_NAME}_core SHARED
   src/jps_3d.cpp
   src/voxel_map.cpp
+  src/pcd_voxel_loader.cpp
 )
 
 ament_target_dependencies(${PROJECT_NAME}_core

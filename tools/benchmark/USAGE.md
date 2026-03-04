@@ -69,6 +69,9 @@ cd /path/to/global_nav_ws/tools/benchmark/tools
 # Spiral (r=0.2m)
 python3 rviz_benchmark.py --scene spiral --resolution 0.2 --trials 50
 
+# Spiral C++快速预处理模式（推荐，Tp最快）
+python3 rviz_benchmark.py --scene spiral --resolution 0.2 --trials 50 --cpp-fast-load
+
 # Building (r=0.1m)
 python3 rviz_benchmark.py --scene building --resolution 0.1 --trials 50
 
@@ -84,6 +87,20 @@ python3 rviz_benchmark.py --scene plaza --resolution 0.1 --trials 50
 5. 点击选择**导航终点**（红色球）— 必须选在绿色 surface 上
 6. 自动运行 N 次规划，实时打印统计
 7. 继续点击开始新一组测试；`Ctrl+C` 退出并保存结果
+
+### A-1b：C++ 快速预处理模式（最快）
+
+当你只关心预处理速度（Tp）时，推荐使用：
+
+```bash
+cd /path/to/global_nav_ws/tools/benchmark/tools
+python3 rviz_benchmark.py --scene spiral --resolution 0.2 --trials 50 --cpp-fast-load
+```
+
+说明：
+- 通过 `load_pcd_map` 服务在 C++ 端完成 `PCD 读取 + 体素化 + 建图`
+- 跳过 Python `pcd_to_voxel.py` 预处理与大消息构造开销
+- 启动后直接等待选择起点/终点（无白色原始点云与种子点步骤）
 
 ### A-2：自动化批量测试
 
@@ -195,7 +212,7 @@ python3 rviz_benchmark.py --preloaded --scene s1 --resolution 0.1 --trials 50
 | 总导航时间 | Tall | Tp + Te + Ts + To |
 | 路径长度 | — | 三维欧氏路径长度 (m) |
 | 访问图节点数 | Ns | visited graph nodes for planning |
-| 内存使用 | Size | 体素数（字节估算） |
+| 内存使用 | Size | memory usage of the constructed scene representation（bytes） |
 
 > `ts_ms`（兼容别名 `planning_time_ms`）由 C++ 节点内部计时，**不包含 ROS2 服务调用开销**。
 
@@ -232,7 +249,7 @@ JSON 结构：
       "start": [-16.0, -6.0, 2.8],
       "goal": [-26.0, -5.0, 2.8],
       "euclidean_distance": 10.05,
-      "trials": [ { "success": true, "tp_ms": 531.2, "te_ms": 182.6, "ts_ms": 47.3, "ns_visited_nodes": 1842, ... } ]
+      "trials": [ { "success": true, "tp_ms": 531.2, "te_ms": 182.6, "ts_ms": 47.3, "ns_visited_nodes": 1842, "memory_usage_bytes": 251904, ... } ]
     }
   ]
 }
