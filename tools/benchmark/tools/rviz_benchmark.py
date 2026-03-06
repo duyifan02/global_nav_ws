@@ -166,7 +166,12 @@ class RunResult:
 
 class RVizBenchmarkNode(Node):
     def __init__(self, scene_name: str, resolution: float, num_trials: int,
-                 preloaded: bool = False, cpp_fast_load: bool = False):
+                 preloaded: bool = False, cpp_fast_load: bool = False,
+                 obj_path: str = '', obj_auto_center: bool = False,
+                 obj_origin: Optional[List[float]] = None,
+                 service_timeout_sec: float = 10.0,
+                 map_load_timeout_sec: float = 120.0,
+                 skip_surface_fetch: bool = False):
         super().__init__('rviz_benchmark')
 
         self.scene_name = scene_name
@@ -174,6 +179,13 @@ class RVizBenchmarkNode(Node):
         self.num_trials = num_trials
         self.preloaded = preloaded  # True: 地图已由外部节点加载（如 obj_mesh_loader）
         self.cpp_fast_load = cpp_fast_load and (not preloaded)
+        self.obj_path = obj_path.strip()
+        self.obj_auto_center = bool(obj_auto_center)
+        self.obj_origin = obj_origin if obj_origin is not None else [0.0, 0.0, 0.0]
+        self.service_timeout_sec = float(service_timeout_sec)
+        self.map_load_timeout_sec = float(map_load_timeout_sec)
+        self.skip_surface_fetch = bool(skip_surface_fetch)
+        self.obj_mode = bool(self.obj_path) and (not self.preloaded)
 
         # preloaded 模式跳过种子选择，直接等待起点
         self.state = SelectionState.WAITING_START if (preloaded or self.cpp_fast_load) else SelectionState.WAITING_SEED
@@ -212,22 +224,29 @@ class RVizBenchmarkNode(Node):
         self.get_surface_client = self.create_client(GetDistanceField, '/get_distance_field', callback_group=self.cb_group)
 
         self.get_logger().info("等待JPS服务...")
-        self.set_map_client.wait_for_service(timeout_sec=10.0)
-        self.plan_client.wait_for_service(timeout_sec=10.0)
+        if not self.set_map_client.wait_for_service(timeout_sec=self.service_timeout_sec):
+            raise RuntimeError('set_voxel_map service not available')
+        if not self.plan_client.wait_for_service(timeout_sec=self.service_timeout_sec):
+            raise RuntimeError('plan_path service not available')
         self.get_logger().info("JPS服务已连接")
 
         if preloaded:
             # 地图已由外部加载（obj_mesh_loader），直接拉取 surface 发布到 RViz
-            self.get_surface_client.wait_for_service(timeout_sec=5.0)
+            if not self.get_surface_client.wait_for_service(timeout_sec=self.service_timeout_sec):
+                self.get_logger().warn('get_distance_field service not available; surface可视化不可用')
             self.map_info = {'scene': scene_name, 'resolution': resolution,
                              'source': 'preloaded (obj_mesh_loader)'}
-            self.publish_surface()
+            self.request_surface_async()
+        elif self.obj_mode:
+            self.load_scene_obj()
+            self.publish_pointcloud()
         elif self.cpp_fast_load:
-            self.get_surface_client.wait_for_service(timeout_sec=5.0)
-            if not self.load_pcd_client.wait_for_service(timeout_sec=5.0):
+            if not self.get_surface_client.wait_for_service(timeout_sec=self.service_timeout_sec):
+                self.get_logger().warn('get_distance_field service not available; surface可视化不可用')
+            if not self.load_pcd_client.wait_for_service(timeout_sec=self.service_timeout_sec):
                 raise RuntimeError('load_pcd_map service not available. Please restart jps_planner_node after rebuilding.')
             self.load_scene_cpp_fast()
-            self.publish_surface()
+            self.request_surface_async()
         else:
             self.load_scene()
             self.publish_pointcloud()
@@ -242,10 +261,14 @@ class RVizBenchmarkNode(Node):
         print(f"分辨率: {self.resolution}m")
         if self.preloaded:
             print("模式: Preloaded (地图已由外部节点加载，如 obj_mesh_loader)")
+        elif self.obj_mode:
+            print(f"模式: OBJ ({self.obj_path}) -> set_voxel_map 服务")
         elif self.cpp_fast_load:
             print("模式: C++ Fast Load (load_pcd_map，跳过 Python 预处理)")
         else:
             print(f"体素数: {self.map_info.get('num_voxels', 'N/A')}")
+        if self.skip_surface_fetch:
+            print("注意: 已禁用自动surface拉取 (--skip-surface-fetch)")
         print(f"每组测试次数: {self.num_trials}")
         print()
         print("RViz2设置:")
@@ -275,8 +298,34 @@ class RVizBenchmarkNode(Node):
             print("  4. 继续点击选择新的起点/终点")
             print("  5. Ctrl+C 退出并保存结果")
             print()
-            print("当前状态: 等待选择建图种子点...")
+            if self.obj_mode:
+                print("当前状态: 等待选择建图种子点（OBJ已体素化，尚未发送到JPS）...")
+            else:
+                print("当前状态: 等待选择建图种子点...")
         print("="*70)
+
+    def _call_service(self, client, request, service_name: str, timeout_sec: Optional[float] = None):
+        """统一服务调用入口：提供超时与错误日志，避免 call() 无限阻塞。"""
+        call_timeout = float(timeout_sec if timeout_sec is not None else self.service_timeout_sec)
+        t0 = time.time()
+        try:
+            response = client.call(request, timeout_sec=call_timeout)
+        except TypeError:
+            # 兼容旧版 rclpy (无 timeout_sec 参数)
+            self.get_logger().warn(
+                f'{service_name} 当前rclpy不支持timeout_sec，退化为无超时调用')
+            response = client.call(request)
+        except Exception as exc:
+            self.get_logger().error(f'{service_name} 调用异常: {exc}')
+            return None
+
+        elapsed = time.time() - t0
+        if response is None:
+            self.get_logger().error(
+                f'{service_name} 超时或失败 (timeout={call_timeout:.1f}s, elapsed={elapsed:.2f}s)')
+            return None
+
+        return response
 
     def load_scene_cpp_fast(self):
         benchmark_root = Path(__file__).resolve().parent.parent
@@ -296,7 +345,12 @@ class RVizBenchmarkNode(Node):
         request.max_abs_coord = 200.0
 
         print(f"[LOG] C++快速加载: {pcd_path}")
-        response = self.load_pcd_client.call(request)
+        response = self._call_service(
+            self.load_pcd_client,
+            request,
+            '/load_pcd_map',
+            timeout_sec=self.map_load_timeout_sec,
+        )
         if response is None or not response.success:
             msg = response.message if response else "No response"
             raise RuntimeError(f"load_pcd_map failed: {msg}")
@@ -320,6 +374,67 @@ class RVizBenchmarkNode(Node):
             f"Tp={self._preprocessing_time_ms:.2f}ms, Te={self._traversability_time_ms:.2f}ms, "
             f"Size={self._map_memory_usage_bytes} bytes"
         )
+
+    def load_scene_obj(self):
+        """加载OBJ网格并体素化（本地处理），后续通过 set_voxel_map 服务发送。"""
+        obj_file = Path(self.obj_path).expanduser().resolve()
+        if not obj_file.exists():
+            raise RuntimeError(f'OBJ文件不存在: {obj_file}')
+
+        workspace_root = Path(__file__).resolve().parents[3]
+        occmap_pkg_root = workspace_root / 'src' / 'occmap_tools'
+        if str(occmap_pkg_root) not in sys.path:
+            sys.path.insert(0, str(occmap_pkg_root))
+
+        try:
+            from occmap_tools.obj_mesh_loader import load_obj_mesh, voxelize_mesh
+        except Exception as exc:
+            raise RuntimeError(f'导入OBJ体素化工具失败: {exc}')
+
+        origin = tuple(float(v) for v in self.obj_origin)
+        t0 = time.time()
+        vertices, faces = load_obj_mesh(str(obj_file))
+        if vertices.size == 0 or faces.size == 0:
+            raise RuntimeError('OBJ文件无有效几何数据')
+
+        if self.obj_auto_center:
+            mesh_center = vertices.mean(axis=0)
+            origin = tuple((-mesh_center).tolist())
+
+        voxel_centers = voxelize_mesh(
+            vertices,
+            faces,
+            self.resolution,
+            origin,
+            logger=self.get_logger(),
+        )
+        t1 = time.time()
+
+        if voxel_centers.size == 0:
+            raise RuntimeError('OBJ体素化结果为空')
+
+        self.voxel_centers = voxel_centers
+        self.occupied_list = [tuple(v) for v in voxel_centers]
+        self._preprocessing_time_ms = (t1 - t0) * 1000.0
+
+        self.map_info = {
+            'scene': self.scene_name,
+            'resolution': self.resolution,
+            'source': 'obj_local_voxelization',
+            'obj_path': str(obj_file),
+            'origin': list(origin),
+            'auto_center': self.obj_auto_center,
+            'num_vertices': int(vertices.shape[0]),
+            'num_faces': int(faces.shape[0]),
+            'num_voxels': int(voxel_centers.shape[0]),
+        }
+
+        print(f"[LOG] === 加载OBJ场景: {self.scene_name} ===")
+        print(f"[LOG] OBJ文件: {obj_file}")
+        print(f"[LOG] 顶点数: {vertices.shape[0]}, 面片数: {faces.shape[0]}")
+        print(f"[LOG] 体素化后体素数: {voxel_centers.shape[0]}")
+        print(f"[LOG] OBJ体素化耗时 (Tp): {self._preprocessing_time_ms:.2f}ms")
+        print(f"[LOG] 体素化origin: {origin}")
     
     def load_scene(self):
         import time as _time
@@ -380,8 +495,13 @@ class RVizBenchmarkNode(Node):
         print("[LOG] 正在调用 set_voxel_map 服务...")
         t2 = _time.time()
         
-        # 同步调用服务
-        response = self.set_map_client.call(request)
+        # 同步调用服务（带超时）
+        response = self._call_service(
+            self.set_map_client,
+            request,
+            '/set_voxel_map',
+            timeout_sec=self.map_load_timeout_sec,
+        )
         
         t3 = _time.time()
         print(f"[LOG] 服务调用耗时: {t3-t2:.2f}s")
@@ -396,11 +516,8 @@ class RVizBenchmarkNode(Node):
             print(f"[LOG] 建图完成！可行走表面体素: {surface_count}")
             print(f"[LOG] 可通行性估计时间 (Te): {self._traversability_time_ms:.2f}ms")
             print(f"[LOG] 场景表示内存 (Size): {self._map_memory_usage_bytes} bytes")
-            print("[LOG] 正在获取并发布 surface...")
-            t4 = _time.time()
-            self.publish_surface()
-            t5 = _time.time()
-            print(f"[LOG] 发布 surface 耗时: {t5-t4:.2f}s")
+            print("[LOG] 已异步请求 surface 数据（不阻塞主流程）")
+            self.request_surface_async()
             return True
         else:
             msg = response.message if response else "No response"
@@ -408,20 +525,41 @@ class RVizBenchmarkNode(Node):
             print(f"[LOG] 建图失败: {msg}")
             return False
     
-    def publish_surface(self):
-        response = self.get_surface_client.call(GetDistanceField.Request())
-        
+    def request_surface_async(self):
+        """异步拉取 surface，避免同步服务调用导致 UI/流程卡住。"""
+        if self.skip_surface_fetch:
+            self.get_logger().info('skip_surface_fetch=true，跳过surface拉取')
+            return
+
+        if not self.get_surface_client.service_is_ready():
+            self.get_logger().warn('get_distance_field service 不可用，跳过surface拉取')
+            return
+
+        future = self.get_surface_client.call_async(GetDistanceField.Request())
+        future.add_done_callback(self._on_surface_response)
+
+    def _on_surface_response(self, future):
+        try:
+            response = future.result()
+        except Exception as exc:
+            self.get_logger().warn(f'获取可通行区域失败: {exc}')
+            return
+
         if not response or not response.success:
-            self.get_logger().warn("无法获取可通行区域")
+            msg = response.message if response else 'No response'
+            self.get_logger().warn(f'无法获取可通行区域: {msg}')
             return
-        
+
         surface_points = np.array([[p.x, p.y, p.z] for p in response.surface_points], dtype=np.float32)
-        self.surface_points = surface_points  # 保存用于后续检查
-        
+        self.surface_points = surface_points
+
         if len(surface_points) == 0:
-            self.get_logger().warn("可通行区域为空")
+            self.get_logger().warn('可通行区域为空')
             return
-        
+
+        self._publish_surface_cloud(surface_points)
+
+    def _publish_surface_cloud(self, surface_points: np.ndarray):
         msg = PointCloud2()
         msg.header = Header()
         msg.header.frame_id = 'map'
@@ -439,7 +577,7 @@ class RVizBenchmarkNode(Node):
         msg.row_step = msg.point_step * len(surface_points)
         msg.is_dense = True
         msg.data = surface_points.tobytes()
-        
+
         self.surface_pub.publish(msg)
         self.get_logger().info(f"可通行区域已发布到 /benchmark/surface ({len(surface_points)} 点)")
     
@@ -490,7 +628,7 @@ class RVizBenchmarkNode(Node):
         elif self.state == SelectionState.WAITING_START:
             # 检查是否在 surface 上
             _, surface_dist = self.find_nearest_surface(point)
-            if surface_dist > self.resolution * 2:
+            if surface_dist is not None and surface_dist > self.resolution * 2:
                 print(f"\n⚠️  警告: 起点距离可通行区域 {surface_dist:.2f}m")
                 print("    请选在【绿色 surface】上的点！")
                 print(f"    将在 {self.resolution*2:.2f}m 范围内自动吸附")
@@ -505,7 +643,7 @@ class RVizBenchmarkNode(Node):
         elif self.state == SelectionState.WAITING_GOAL:
             # 检查是否在 surface 上
             _, surface_dist = self.find_nearest_surface(point)
-            if surface_dist > self.resolution * 2:
+            if surface_dist is not None and surface_dist > self.resolution * 2:
                 print(f"\n⚠️  警告: 终点距离可通行区域 {surface_dist:.2f}m")
                 print("    请选在【绿色 surface】上的点！")
                 print(f"    将在 {self.resolution*2:.2f}m 范围内自动吸附")
@@ -537,7 +675,7 @@ class RVizBenchmarkNode(Node):
     def find_nearest_surface(self, point):
         """找到离点最近的 surface 点及距离"""
         if self.surface_points is None or len(self.surface_points) == 0:
-            return None, float('inf')
+            return None, None
         distances = np.linalg.norm(self.surface_points - point, axis=1)
         idx = distances.argmin()
         return self.surface_points[idx], distances[idx]
@@ -735,7 +873,12 @@ class RVizBenchmarkNode(Node):
         
         request.snap_to_surface = True
         
-        response = self.plan_client.call(request)
+        response = self._call_service(
+            self.plan_client,
+            request,
+            '/plan_path',
+            timeout_sec=self.service_timeout_sec,
+        )
         
         if response is None:
             return {
@@ -920,20 +1063,46 @@ class RVizBenchmarkNode(Node):
 
 def main():
     parser = argparse.ArgumentParser(description='RViz2交互式JPS Benchmark')
-    parser.add_argument('--scene', default='spiral', choices=['spiral', 'building', 'plaza'])
+    parser.add_argument('--scene', default='spiral',
+                        help='场景名（PCD模式下支持: spiral/building/plaza；OBJ模式可自定义，仅用于结果命名）')
     parser.add_argument('--resolution', type=float, default=0.5)
     parser.add_argument('--trials', type=int, default=100, help='每组起终点的测试次数')
     parser.add_argument('--preloaded', action='store_true',
                         help='地图已由外部节点加载（如 obj_mesh_loader），跳过种子点选择和点云发布')
     parser.add_argument('--cpp-fast-load', action='store_true',
                         help='使用 C++ load_pcd_map 服务进行快速预处理并建图（跳过 Python PCD 体素化）')
+    parser.add_argument('--obj-path', type=str, default='',
+                        help='OBJ文件路径。设置后启用OBJ模式（本地体素化 + /set_voxel_map 服务建图）')
+    parser.add_argument('--obj-auto-center', action='store_true',
+                        help='OBJ模式下自动把网格中心平移到原点')
+    parser.add_argument('--obj-origin', nargs=3, type=float, default=[0.0, 0.0, 0.0],
+                        help='OBJ模式体素化origin，格式: x y z')
+    parser.add_argument('--service-timeout', type=float, default=10.0,
+                        help='普通服务调用超时秒数（plan/get_surface）')
+    parser.add_argument('--map-load-timeout', type=float, default=120.0,
+                        help='地图加载服务超时秒数（set_voxel_map/load_pcd_map）')
+    parser.add_argument('--skip-surface-fetch', action='store_true',
+                        help='不自动请求 /get_distance_field（用于超大地图避免大响应卡顿）')
     args = parser.parse_args()
+
+    if args.preloaded and args.obj_path:
+        print('[WARN] --preloaded 与 --obj-path 同时指定时，优先使用 preloaded 模式，忽略 --obj-path')
+
+    if args.cpp_fast_load and args.obj_path:
+        print('[WARN] --cpp-fast-load 与 --obj-path 不可同时生效，优先使用 --obj-path')
+        args.cpp_fast_load = False
 
     rclpy.init()
 
     node = RVizBenchmarkNode(args.scene, args.resolution, args.trials,
                              preloaded=args.preloaded,
-                             cpp_fast_load=args.cpp_fast_load)
+                             cpp_fast_load=args.cpp_fast_load,
+                             obj_path=args.obj_path,
+                             obj_auto_center=args.obj_auto_center,
+                             obj_origin=args.obj_origin,
+                             service_timeout_sec=args.service_timeout,
+                             map_load_timeout_sec=args.map_load_timeout,
+                             skip_surface_fetch=args.skip_surface_fetch)
     
     # 使用 MultiThreadedExecutor 支持在回调中等待服务响应
     executor = MultiThreadedExecutor(num_threads=4)
