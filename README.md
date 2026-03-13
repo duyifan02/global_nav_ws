@@ -1,10 +1,72 @@
-# Global Navigation - 3D Path Planning System
+# Global Navigation — 3D 路径规划 & 拓扑地图系统
 
-ROS 2 based 3D path planning for ground robots in complex environments (stairs, slopes, steps). Uses **JPS (Just Planning on Surface)** algorithm - Surface-constrained A* that extracts walkable surfaces from voxel maps.
+面向地面机器人在复杂室内环境（楼梯、坡道、多层建筑）中的导航。包含两个子系统：
+
+| 包 | 功能 | 论文 |
+|----|------|------|
+| `jps_planner_3d` | 遍历面提取 + 距离场 + 体素级 A* | Beyond Geometry |
+| **`topo_nav`** | **持久拓扑房间分割 + 分层规划** | **Beyond Slicing** |
+
+> **如果你要使用分层规划（`topo_nav`），请直接跳到 [topo_nav 快速上手](#topo_nav-快速上手)。**
+> `topo_nav` 自包含所有功能，不需要单独启动 `jps_planner_node`。
 
 ---
 
-## Quick Start
+## topo_nav 快速上手
+
+详细文档见 [`src/topo_nav/doc/README.md`](src/topo_nav/doc/README.md)。
+
+### 1. 编译
+
+```bash
+cd global_nav_ws
+source /opt/ros/humble/setup.bash   # humble 或 jazzy
+colcon build --packages-up-to topo_nav --cmake-args -DCMAKE_BUILD_TYPE=Release
+source install/setup.bash
+```
+
+> 若之前编译过旧版 `jps_planner_3d`，需先清理：
+> ```bash
+> rm -rf build/jps_planner_3d install/jps_planner_3d
+> ```
+
+### 2. 启动节点
+
+```bash
+ros2 launch topo_nav topo_nav.launch.py
+```
+
+### 3. 加载地图 → 构建拓扑图 → 规划
+
+```bash
+# 加载 PCD 地图
+ros2 service call /topo_nav/load_pcd_map nav_interfaces/srv/LoadPcdMap "{
+  pcd_path: '/path/to/scene.pcd', resolution: 0.1,
+  min_points_per_voxel: 1, max_abs_coord: 100.0}"
+
+# 构建拓扑地图（房间分割 + 楼层检测）
+ros2 service call /topo_nav/build_topo_map nav_interfaces/srv/BuildTopoMap "{
+  persistence_tau: 3.0, floor_separation_m: 2.5,
+  corridor_aspect_ratio: 3.0, staircase_variance_m: 0.5, robot_diameter_m: 0.4}"
+
+# 分层路径规划
+ros2 service call /topo_nav/plan_hierarchical nav_interfaces/srv/PlanHierarchical "{
+  start: {position: {x: 1.0, y: 2.0, z: 0.1}},
+  goal:  {position: {x: 15.0, y: 8.0, z: 3.2}},
+  snap_to_surface: true, robot_diameter_m: 0.4}"
+```
+
+### 4. 可视化
+
+```bash
+ros2 run topo_nav room_visualizer  # 发布彩色房间点云到 RViz
+```
+
+---
+
+## jps_planner_3d 快速上手（原始体素级规划）
+
+### Quick Start
 
 ### 1. Build Workspace
 ```bash
