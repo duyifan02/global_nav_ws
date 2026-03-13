@@ -11,7 +11,7 @@
 #include <nav_msgs/msg/path.hpp>
 
 #include "jps_planner_3d/voxel_map.hpp"
-#include "jps_planner_3d/pcd_voxel_loader.hpp"
+#include "jps_planner_3d/pcd_voxel_loader.hpp"   // loadAndVoxelizePcd, PcdVoxelizeResult
 
 #include "topo_nav/persistence.hpp"
 #include "topo_nav/room_segmenter.hpp"
@@ -165,15 +165,18 @@ private:
   {
     std::lock_guard<std::mutex> lock(map_mutex_);
 
-    auto loader = std::make_unique<jps_planner_3d::PcdVoxelLoader>();
+    jps_planner_3d::PcdVoxelizeResult pcd_result;
+    std::string err_msg;
     const auto t0 = std::chrono::steady_clock::now();
-    const bool ok = loader->load(req->pcd_path, req->min_points_per_voxel,
-                                 req->max_abs_coord);
+    const bool ok = jps_planner_3d::loadAndVoxelizePcd(
+      req->pcd_path, req->resolution,
+      req->min_points_per_voxel, req->max_abs_coord,
+      pcd_result, err_msg);
     const auto t1 = std::chrono::steady_clock::now();
 
     if (!ok) {
       res->success = false;
-      res->message = "PCD load failed.";
+      res->message = "PCD load failed: " + err_msg;
       return;
     }
 
@@ -193,13 +196,13 @@ private:
 
     voxel_map_ = std::make_shared<jps_planner_3d::VoxelMap>();
     configureMap();
-    voxel_map_->updateFromPoints(loader->getOccupiedVoxels(), req->resolution, seed_ptr);
+    voxel_map_->updateFromPoints(pcd_result.occupied_voxels, req->resolution, seed_ptr);
     rebuildPlanner();
 
     res->success               = true;
     res->message               = "PCD map loaded.";
-    res->raw_point_count       = static_cast<int64_t>(loader->getRawPointCount());
-    res->occupied_voxel_count  = static_cast<int64_t>(loader->getOccupiedVoxelCount());
+    res->raw_point_count       = pcd_result.raw_point_count;
+    res->occupied_voxel_count  = static_cast<int64_t>(pcd_result.occupied_voxels.size());
     res->surface_voxel_count   = static_cast<int64_t>(
       voxel_map_->getValidSurfaceVoxels().size());
     res->preprocessing_time_ms = Tp;
