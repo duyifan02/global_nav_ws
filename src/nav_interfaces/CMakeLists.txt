@@ -11,6 +11,9 @@ set(srv_files
   srv/LoadPcdMap.srv
   srv/PlanPath.srv
   srv/GetDistanceField.srv
+  srv/BuildTopoMap.srv
+  srv/GetRoomLabels.srv
+  srv/PlanHierarchical.srv
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}

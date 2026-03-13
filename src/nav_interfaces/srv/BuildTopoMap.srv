@@ -1,0 +1,13 @@
+float64 persistence_tau        # τ threshold (voxel units, typically 3)
+float64 floor_separation_m     # H_floor in metres (typically 2.5)
+float64 corridor_aspect_ratio  # γ for corridor classification (typically 3.0)
+float64 staircase_variance_m   # σ_stair in metres (typically 0.5)
+float64 robot_diameter_m       # w_robot in metres (for passage-width filter)
+---
+bool success
+string message
+int32 num_rooms
+int32 num_floors
+int32 num_staircases
+int32 num_corridors
+float64 build_time_ms

@@ -13,14 +13,16 @@ find_package(nav_interfaces REQUIRED)
 find_package(rosidl_cmake REQUIRED)
 find_package(rosidl_default_runtime REQUIRED)
 
-include_directories(
-  include
-)
-
+# ── Core library ────────────────────────────────────────────────────────────
 add_library(${PROJECT_NAME}_core SHARED
   src/jps_3d.cpp
   src/voxel_map.cpp
   src/pcd_voxel_loader.cpp
+)
+
+target_include_directories(${PROJECT_NAME}_core PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
 )
 
 ament_target_dependencies(${PROJECT_NAME}_core
@@ -32,6 +34,9 @@ target_compile_definitions(${PROJECT_NAME}_core
   PRIVATE "JPS_PLANNER_3D_BUILDING_DLL"
 )
 
+target_compile_features(${PROJECT_NAME}_core PUBLIC cxx_std_17)
+
+# ── Node executable ──────────────────────────────────────────────────────────
 add_executable(jps_planner_node
   src/jps_planner_node.cpp
 )
@@ -49,7 +54,7 @@ target_link_libraries(jps_planner_node
 )
 
 # nav_interfaces exports its generated typesupport targets under
-# nav_interfaces_TARGETS__rosidl_typesupport_cpp (e.g. nav_interfaces::nav_interfaces__rosidl_typesupport_cpp)
+# nav_interfaces_TARGETS__rosidl_typesupport_cpp
 if(nav_interfaces_TARGETS__rosidl_typesupport_cpp)
   target_link_libraries(jps_planner_node
     ${nav_interfaces_TARGETS__rosidl_typesupport_cpp}
@@ -65,13 +70,16 @@ target_include_directories(jps_planner_node PUBLIC
 
 target_compile_features(jps_planner_node PUBLIC cxx_std_17)
 
-target_compile_features(${PROJECT_NAME}_core PUBLIC cxx_std_17)
-
-install(TARGETS
-  ${PROJECT_NAME}_core
-  jps_planner_node
+# ── Install ──────────────────────────────────────────────────────────────────
+# Install core library with EXPORT so downstream packages can find it
+install(TARGETS ${PROJECT_NAME}_core
+  EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
+)
+
+install(TARGETS jps_planner_node
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -91,5 +99,8 @@ install(DIRECTORY doc
   DESTINATION share/${PROJECT_NAME}
 )
 
-ament_export_dependencies(rosidl_default_runtime)
+# Export library for other packages
+ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
+ament_export_include_directories(include)
+ament_export_dependencies(geometry_msgs nav_msgs rosidl_default_runtime)
 ament_package()

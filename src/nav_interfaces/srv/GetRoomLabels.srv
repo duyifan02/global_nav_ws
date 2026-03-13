@@ -1,0 +1,8 @@
+# Request: empty — returns labels for the currently loaded topo map
+---
+bool success
+string message
+geometry_msgs/Point[] surface_points    # world coordinates of each surface voxel
+int32[] room_labels                     # room_labels[i] = room id of surface_points[i]
+int32[] floor_labels                    # floor id of each surface voxel
+float32[] room_persistence              # persistence value of each voxel's room maximum

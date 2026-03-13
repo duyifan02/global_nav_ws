@@ -1,0 +1,33 @@
+topo_nav_node:
+  ros__parameters:
+    frame_id: "map"
+
+    # ── Surface extraction (same as jps_planner_3d) ──────────────────────────
+    connectivity_height_threshold: 0.3   # T_conn: max step height (m)
+    surface_clearance_height: 1.6        # H_clear: robot standing height (m)
+    distance_field_max_distance: 10      # max D value (voxel units, max 255)
+
+    # ── A* cost weights (voxel-level planning, same as JPS3D) ────────────────
+    w_up:   2.0    # ω_↑ uphill penalty
+    w_down: 1.0    # ω_↓ downhill penalty
+    w_obs:  0.5    # ω_obs obstacle-clearance penalty
+
+    # ── Topological map parameters (Section 3, paper) ────────────────────────
+    # τ: persistence threshold in voxel units.
+    # Retains maxima with pers > τ. At r=0.1m, τ=3 → 0.3m gap criterion.
+    persistence_tau: 3.0
+
+    # H_floor: minimum gap between consecutive room median heights to define
+    # a new floor (metres).  Conservative: 2.5 m is below any standard floor.
+    floor_separation_m: 2.5
+
+    # γ: corridor aspect-ratio threshold.  A room with PCA ratio > γ is
+    # classified as a corridor.
+    corridor_aspect_ratio: 3.0
+
+    # σ_stair: staircase height std-dev threshold (metres).  A room whose
+    # voxels span more than σ_stair in z is classified as a staircase.
+    staircase_variance_m: 0.5
+
+    # w_robot: robot diameter for passage-width filtering (metres).
+    robot_diameter_m: 0.4
