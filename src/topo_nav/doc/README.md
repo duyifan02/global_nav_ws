@@ -75,9 +75,18 @@ source install/setup.bash
 
 ### Terminal 1：启动节点
 
+**方式一（推荐，兼容 obj_mesh_loader）：**
+```bash
+source install/setup.bash
+ros2 run topo_nav topo_nav_node
+# 服务名: /set_voxel_map, /build_topo_map, /plan_hierarchical, ...
+```
+
+**方式二（带 namespace，使用 yaml 配置）：**
 ```bash
 source install/setup.bash
 ros2 launch topo_nav topo_nav.launch.py
+# 服务名: /topo_nav/set_voxel_map, /topo_nav/build_topo_map, ...
 ```
 
 启动后看到：
@@ -92,7 +101,8 @@ ros2 launch topo_nav topo_nav.launch.py
 **方式 A — 从 PCD 文件加载**（推荐用于 Matterport3D 数据）
 
 ```bash
-ros2 service call /topo_nav/load_pcd_map nav_interfaces/srv/LoadPcdMap "{
+# 用 ros2 run 启动的节点用 /load_pcd_map；用 launch 启动的用 /topo_nav/load_pcd_map
+ros2 service call /load_pcd_map nav_interfaces/srv/LoadPcdMap "{
   pcd_path: '/path/to/scene.pcd',
   resolution: 0.1,
   min_points_per_voxel: 1,
@@ -114,7 +124,7 @@ traversability_time_ms: 312.4
 **方式 B — 直接传入占据体素列表**
 
 ```bash
-ros2 service call /topo_nav/set_voxel_map nav_interfaces/srv/SetVoxelMap "{
+ros2 service call /set_voxel_map nav_interfaces/srv/SetVoxelMap "{
   resolution: 0.1,
   occupied: [{x: 1.0, y: 0.0, z: 0.0}, {x: 1.0, y: 0.1, z: 0.0}],
   seed_point: {x: 0.0, y: 0.0, z: 0.0}
@@ -123,13 +133,28 @@ ros2 service call /topo_nav/set_voxel_map nav_interfaces/srv/SetVoxelMap "{
 
 **方式 C — 复用 occmap_tools 加载 OBJ mesh（推荐用于本地测试）**
 
+`obj_mesh_loader` 固定调用 `/set_voxel_map` 服务。因此直接用 `ros2 run`（**不要**用 launch 文件）启动 topo_nav_node，服务名自然为 `/set_voxel_map`：
+
 ```bash
-# Terminal 2: 加载 OBJ 并发布体素到 /topo_nav/set_voxel_map
+# Terminal 1: 直接启动 topo_nav_node（服务名无 namespace 前缀）
+ros2 run topo_nav topo_nav_node
+
+# Terminal 2: 加载 OBJ mesh
+ros2 run occmap_tools obj_mesh_loader \
+  --ros-args \
+  -p obj_path:=/path/to/scene.obj \
+  -p resolution:=0.1
+```
+
+如果你**必须**用 launch 文件启动（服务名带 `/topo_nav/` 前缀），则需 remap：
+
+```bash
+# Terminal 2: remap obj_mesh_loader 调用的服务名
 ros2 run occmap_tools obj_mesh_loader \
   --ros-args \
   -p obj_path:=/path/to/scene.obj \
   -p resolution:=0.1 \
-  -p target_service:=/topo_nav/set_voxel_map
+  -r set_voxel_map:=/topo_nav/set_voxel_map
 ```
 
 ---
@@ -137,7 +162,7 @@ ros2 run occmap_tools obj_mesh_loader \
 ### Step 2：构建拓扑地图
 
 ```bash
-ros2 service call /topo_nav/build_topo_map nav_interfaces/srv/BuildTopoMap "{
+ros2 service call /build_topo_map nav_interfaces/srv/BuildTopoMap "{
   persistence_tau: 3.0,
   floor_separation_m: 2.5,
   corridor_aspect_ratio: 3.0,
@@ -168,7 +193,7 @@ build_time_ms: 45.2    # 含 Algorithm 1 + 2 + 楼层检测
 ### Step 3：分层路径规划
 
 ```bash
-ros2 service call /topo_nav/plan_hierarchical nav_interfaces/srv/PlanHierarchical "{
+ros2 service call /plan_hierarchical nav_interfaces/srv/PlanHierarchical "{
   start: {position: {x: 1.0, y: 2.0, z: 0.1}},
   goal:  {position: {x: 15.0, y: 8.0, z: 3.2}},
   snap_to_surface: true,
@@ -195,14 +220,18 @@ path: ...                     # nav_msgs/Path，直接在 RViz 中显示
 
 ## 服务接口详解
 
-| 服务名 | 功能 |
+| 服务名（短名） | 功能 |
 |--------|------|
-| `/topo_nav/set_voxel_map` | 从体素点列表加载地图 |
-| `/topo_nav/load_pcd_map` | 从 PCD 文件加载地图 |
-| `/topo_nav/build_topo_map` | 运行 Algorithm 1+2，构建拓扑地图 |
-| `/topo_nav/get_room_labels` | 返回每个体素的房间/楼层标签（用于可视化） |
-| `/topo_nav/plan_hierarchical` | 三级分层 A* 规划 |
+| `set_voxel_map` | 从体素点列表加载地图 |
+| `load_pcd_map` | 从 PCD 文件加载地图 |
+| `build_topo_map` | 运行 Algorithm 1+2，构建拓扑地图 |
+| `get_room_labels` | 返回每个体素的房间/楼层标签（用于可视化） |
+| `plan_hierarchical` | 三级分层 A* 规划 |
 
+> **服务名规则**：代码中注册的是短名（如 `set_voxel_map`）。
+> - `ros2 run topo_nav topo_nav_node` → 服务为 `/set_voxel_map`（与 `obj_mesh_loader` 兼容）
+> - `ros2 launch topo_nav topo_nav.launch.py` → 服务为 `/topo_nav/set_voxel_map`（launch 文件设了 namespace）
+>
 > 前两个服务与 `jps_planner_node` 的接口完全相同，可直接复用现有的加载工具。
 
 ---

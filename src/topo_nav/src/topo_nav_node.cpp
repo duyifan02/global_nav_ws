@@ -59,27 +59,27 @@ public:
 
     // ── Services ────────────────────────────────────────────────────────────
     set_map_srv_ = create_service<srv::SetVoxelMap>(
-      "topo_nav/set_voxel_map",
+      "set_voxel_map",
       std::bind(&TopoNavNode::handleSetVoxelMap, this,
         std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 
     load_pcd_srv_ = create_service<srv::LoadPcdMap>(
-      "topo_nav/load_pcd_map",
+      "load_pcd_map",
       std::bind(&TopoNavNode::handleLoadPcdMap, this,
         std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 
     build_topo_srv_ = create_service<srv::BuildTopoMap>(
-      "topo_nav/build_topo_map",
+      "build_topo_map",
       std::bind(&TopoNavNode::handleBuildTopoMap, this,
         std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 
     get_labels_srv_ = create_service<srv::GetRoomLabels>(
-      "topo_nav/get_room_labels",
+      "get_room_labels",
       std::bind(&TopoNavNode::handleGetRoomLabels, this,
         std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 
     plan_hier_srv_ = create_service<srv::PlanHierarchical>(
-      "topo_nav/plan_hierarchical",
+      "plan_hierarchical",
       std::bind(&TopoNavNode::handlePlanHierarchical, this,
         std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 

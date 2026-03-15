@@ -33,8 +33,8 @@ class HierarchicalPlanClient(Node):
         self.declare_parameter('build_first', False)
         self.declare_parameter('persistence_tau', 3.0)
 
-        self._plan_cli  = self.create_client(PlanHierarchical, 'topo_nav/plan_hierarchical')
-        self._build_cli = self.create_client(BuildTopoMap,    'topo_nav/build_topo_map')
+        self._plan_cli  = self.create_client(PlanHierarchical, '/topo_nav/plan_hierarchical')
+        self._build_cli = self.create_client(BuildTopoMap,    '/topo_nav/build_topo_map')
 
     def run(self):
         # Optionally build topo map first

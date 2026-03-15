@@ -99,7 +99,7 @@ class RoomVisualizerNode(Node):
         self._floor_pub  = self.create_publisher(PointCloud2, '/topo_nav/floor_cloud',   10)
         self._pers_pub   = self.create_publisher(PointCloud2, '/topo_nav/persist_cloud', 10)
 
-        self._cli = self.create_client(GetRoomLabels, 'topo_nav/get_room_labels')
+        self._cli = self.create_client(GetRoomLabels, '/topo_nav/get_room_labels')
 
         rate = self.get_parameter('publish_rate_hz').value
         self._timer = self.create_timer(1.0 / rate, self._tick)

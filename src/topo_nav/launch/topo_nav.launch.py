@@ -18,6 +18,7 @@ def generate_launch_description():
         package='topo_nav',
         executable='topo_nav_node',
         name='topo_nav_node',
+        namespace='topo_nav',
         output='screen',
         parameters=[LaunchConfiguration('config')]
     )
