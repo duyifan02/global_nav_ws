@@ -60,6 +60,8 @@ from nav_interfaces.srv import (
     GetRoomLabels,
     PlanHierarchical,
 )
+from rcl_interfaces.srv import SetParameters
+from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
 
 
 class SelectionState(Enum):
@@ -96,6 +98,9 @@ class RVizTopoBenchmarkNode(Node):
                  corridor_aspect_ratio: float = 3.0,
                  staircase_variance_m: float = 0.5,
                  robot_diameter_m: float = 0.4,
+                 connectivity_height: float = 0.3,
+                 surface_clearance: float = 1.6,
+                 distance_field_max: int = 10,
                  service_timeout_sec: float = 10.0,
                  map_load_timeout_sec: float = 120.0):
         super().__init__('rviz_topo_benchmark')
@@ -115,6 +120,11 @@ class RVizTopoBenchmarkNode(Node):
         self.corridor_aspect_ratio = corridor_aspect_ratio
         self.staircase_variance_m = staircase_variance_m
         self.robot_diameter_m = robot_diameter_m
+
+        # VoxelMap surface extraction parameters
+        self.connectivity_height = connectivity_height
+        self.surface_clearance = surface_clearance
+        self.distance_field_max = distance_field_max
 
         # State
         self.state = SelectionState.WAITING_SEED
@@ -161,6 +171,8 @@ class RVizTopoBenchmarkNode(Node):
             GetRoomLabels, '/get_room_labels', callback_group=self.cb_group)
         self.plan_client = self.create_client(
             PlanHierarchical, '/plan_hierarchical', callback_group=self.cb_group)
+        self.set_params_client = self.create_client(
+            SetParameters, '/topo_nav_node/set_parameters', callback_group=self.cb_group)
 
         # Wait for topo_nav services
         self.get_logger().info("等待 topo_nav 服务...")
@@ -192,13 +204,17 @@ class RVizTopoBenchmarkNode(Node):
         if self.obj_path:
             print(f"模式: OBJ ({self.obj_path})")
         print(f"体素数: {self.map_info.get('num_voxels', 'N/A')}")
+        print(f"\n遍历面提取参数 (影响 surface 形状):")
+        print(f"  --z-conn     Z轴连通阈值     = {self.connectivity_height} m  (降低 → 排除高台/床面)")
+        print(f"  --clearance  站立净空高度     = {self.surface_clearance} m  (增大 → 排除低矮空间)")
+        print(f"  --dist-max   距离场最大值     = {self.distance_field_max} 体素")
         print(f"\n拓扑参数:")
-        print(f"  τ (persistence)    = {self.persistence_tau}")
-        print(f"  H_floor            = {self.floor_separation_m} m")
-        print(f"  γ (corridor ratio) = {self.corridor_aspect_ratio}")
-        print(f"  σ_stair            = {self.staircase_variance_m} m")
-        print(f"  robot diameter     = {self.robot_diameter_m} m")
-        print(f"  trials per run     = {self.num_trials}")
+        print(f"  --tau        τ (persistence)  = {self.persistence_tau}")
+        print(f"  --floor-sep  H_floor          = {self.floor_separation_m} m")
+        print(f"  --corridor-ratio  γ           = {self.corridor_aspect_ratio}")
+        print(f"  --stair-var  σ_stair          = {self.staircase_variance_m} m")
+        print(f"  --robot-diameter              = {self.robot_diameter_m} m")
+        print(f"  trials per run                = {self.num_trials}")
         print(f"\nRViz2 设置:")
         print(f"  1. Fixed Frame: map")
         print(f"  2. Add PointCloud2: /topo_benchmark/pointcloud (白色，原始占据体素)")
@@ -499,7 +515,42 @@ class RVizTopoBenchmarkNode(Node):
 
     # ── Step 1: set_voxel_map ─────────────────────────────────────────────────
 
+    def _push_voxelmap_params(self):
+        """Push connectivity_height_threshold etc. to topo_nav_node before map load."""
+        if not self.set_params_client.service_is_ready():
+            self.get_logger().warn('set_parameters service not ready, using node defaults')
+            return
+
+        params = [
+            Parameter(
+                name='connectivity_height_threshold',
+                value=ParameterValue(
+                    type=ParameterType.PARAMETER_DOUBLE,
+                    double_value=self.connectivity_height)),
+            Parameter(
+                name='surface_clearance_height',
+                value=ParameterValue(
+                    type=ParameterType.PARAMETER_DOUBLE,
+                    double_value=self.surface_clearance)),
+            Parameter(
+                name='distance_field_max_distance',
+                value=ParameterValue(
+                    type=ParameterType.PARAMETER_INTEGER,
+                    integer_value=self.distance_field_max)),
+        ]
+        req = SetParameters.Request()
+        req.parameters = params
+        resp = self._call_service(self.set_params_client, req, 'set_parameters')
+        if resp:
+            print(f"[LOG] VoxelMap 参数已推送: "
+                  f"Z连通阈值={self.connectivity_height}m, "
+                  f"净空高度={self.surface_clearance}m, "
+                  f"距离场最大值={self.distance_field_max}")
+
     def _do_set_voxel_map(self, seed: np.ndarray) -> bool:
+        # Push VoxelMap parameters to topo_nav_node before building map
+        self._push_voxelmap_params()
+
         request = SetVoxelMap.Request()
         request.resolution = self.resolution
         request.seed_point.x = float(seed[0])
@@ -803,6 +854,16 @@ def main():
     parser.add_argument('--robot-diameter', type=float, default=0.4,
                         help='机器人直径 (m)')
 
+    # VoxelMap surface extraction parameters
+    parser.add_argument('--z-conn', type=float, default=0.3,
+                        help='Z轴连通阈值 connectivity_height_threshold (m)，'
+                             '降低此值可排除高台（如床面）。默认 0.3')
+    parser.add_argument('--clearance', type=float, default=1.6,
+                        help='站立净空高度 surface_clearance_height (m)，'
+                             '增大此值可排除低矮空间（如床底）。默认 1.6')
+    parser.add_argument('--dist-max', type=int, default=10,
+                        help='距离场最大值 distance_field_max_distance (体素)。默认 10')
+
     # Timeouts
     parser.add_argument('--service-timeout', type=float, default=10.0)
     parser.add_argument('--map-load-timeout', type=float, default=120.0)
@@ -822,6 +883,9 @@ def main():
         corridor_aspect_ratio=args.corridor_ratio,
         staircase_variance_m=args.stair_var,
         robot_diameter_m=args.robot_diameter,
+        connectivity_height=args.z_conn,
+        surface_clearance=args.clearance,
+        distance_field_max=args.dist_max,
         service_timeout_sec=args.service_timeout,
         map_load_timeout_sec=args.map_load_timeout,
     )
