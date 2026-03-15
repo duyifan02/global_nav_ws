@@ -25,6 +25,7 @@
 #include "nav_interfaces/srv/build_topo_map.hpp"
 #include "nav_interfaces/srv/get_room_labels.hpp"
 #include "nav_interfaces/srv/plan_hierarchical.hpp"
+#include "nav_interfaces/srv/get_distance_field.hpp"
 
 namespace topo_nav
 {
@@ -81,6 +82,11 @@ public:
     plan_hier_srv_ = create_service<srv::PlanHierarchical>(
       "plan_hierarchical",
       std::bind(&TopoNavNode::handlePlanHierarchical, this,
+        std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
+
+    get_dist_srv_ = create_service<srv::GetDistanceField>(
+      "get_distance_field",
+      std::bind(&TopoNavNode::handleGetDistanceField, this,
         std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 
     RCLCPP_INFO(get_logger(), "TopoNav node ready. Call set_voxel_map or "
@@ -394,6 +400,59 @@ private:
       hp.path_length_m, hp.room_sequence.size());
   }
 
+  // ── GetDistanceField ────────────────────────────────────────────────────
+  void handleGetDistanceField(
+    const std::shared_ptr<rmw_request_id_t>,
+    const std::shared_ptr<srv::GetDistanceField::Request>,
+    const std::shared_ptr<srv::GetDistanceField::Response> res)
+  {
+    RCLCPP_INFO(get_logger(), "get_distance_field: retrieving distance field data");
+
+    std::shared_ptr<jps_planner_3d::VoxelMap> map_copy;
+    {
+      std::lock_guard<std::mutex> lock(map_mutex_);
+      map_copy = voxel_map_;
+    }
+
+    if (!map_copy || !map_copy->isReady()) {
+      res->success = false;
+      res->message = "Voxel map is not ready";
+      return;
+    }
+
+    const auto & surface_voxels = map_copy->getValidSurfaceVoxels();
+
+    if (surface_voxels.empty()) {
+      res->success = false;
+      res->message = "No surface voxels available";
+      return;
+    }
+
+    res->resolution = map_copy->getResolution();
+    res->surface_points.reserve(surface_voxels.size());
+    res->distances.reserve(surface_voxels.size());
+
+    for (const auto & voxel : surface_voxels) {
+      auto [ix, iy, iz] = voxel;
+      auto [x, y, z] = map_copy->gridToWorld(ix, iy, iz);
+
+      geometry_msgs::msg::Point pt;
+      pt.x = x;
+      pt.y = y;
+      pt.z = z;
+      res->surface_points.push_back(pt);
+
+      int dist = map_copy->getDistanceToObstacle(ix, iy, iz);
+      res->distances.push_back(static_cast<uint8_t>(dist));
+    }
+
+    res->success = true;
+    res->message = "Distance field retrieved";
+
+    RCLCPP_INFO(get_logger(), "get_distance_field success: %zu surface points",
+                surface_voxels.size());
+  }
+
   // ── State ─────────────────────────────────────────────────────────────────
   std::mutex map_mutex_;
   std::shared_ptr<jps_planner_3d::VoxelMap> voxel_map_;
@@ -409,6 +468,7 @@ private:
   rclcpp::Service<srv::BuildTopoMap>::SharedPtr    build_topo_srv_;
   rclcpp::Service<srv::GetRoomLabels>::SharedPtr   get_labels_srv_;
   rclcpp::Service<srv::PlanHierarchical>::SharedPtr plan_hier_srv_;
+  rclcpp::Service<srv::GetDistanceField>::SharedPtr get_dist_srv_;
 };
 
 }  // namespace topo_nav
