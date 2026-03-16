@@ -1,5 +1,0 @@
-float64 resolution
-geometry_msgs/Point[] occupied
----
-bool success
-string message

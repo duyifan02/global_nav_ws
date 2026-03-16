@@ -101,6 +101,7 @@ class RVizTopoBenchmarkNode(Node):
                  connectivity_height: float = 0.3,
                  surface_clearance: float = 1.6,
                  distance_field_max: int = 10,
+                 topo_node_name: str = 'topo_nav_node',
                  service_timeout_sec: float = 10.0,
                  map_load_timeout_sec: float = 120.0):
         super().__init__('rviz_topo_benchmark')
@@ -125,6 +126,11 @@ class RVizTopoBenchmarkNode(Node):
         self.connectivity_height = connectivity_height
         self.surface_clearance = surface_clearance
         self.distance_field_max = distance_field_max
+
+        # topo_nav_node's set_parameters service path:
+        #   ros2 run  → /<node_name>/set_parameters  (e.g. /topo_nav_node/set_parameters)
+        #   ros2 launch (namespace=topo_nav) → /topo_nav/<node_name>/set_parameters
+        self._set_params_srv_name = f'/{topo_node_name}/set_parameters'
 
         # State
         self.state = SelectionState.WAITING_SEED
@@ -172,7 +178,7 @@ class RVizTopoBenchmarkNode(Node):
         self.plan_client = self.create_client(
             PlanHierarchical, '/plan_hierarchical', callback_group=self.cb_group)
         self.set_params_client = self.create_client(
-            SetParameters, '/topo_nav_node/set_parameters', callback_group=self.cb_group)
+            SetParameters, self._set_params_srv_name, callback_group=self.cb_group)
 
         # Wait for topo_nav services
         self.get_logger().info("等待 topo_nav 服务...")
@@ -864,6 +870,12 @@ def main():
     parser.add_argument('--dist-max', type=int, default=10,
                         help='距离场最大值 distance_field_max_distance (体素)。默认 10')
 
+    # Node name (affects set_parameters service path)
+    parser.add_argument('--node-name', type=str, default='topo_nav_node',
+                        help='topo_nav_node 的节点名。'
+                             'ros2 run 启动时用 topo_nav_node（默认）；'
+                             'ros2 launch 启动时用 topo_nav/topo_nav_node')
+
     # Timeouts
     parser.add_argument('--service-timeout', type=float, default=10.0)
     parser.add_argument('--map-load-timeout', type=float, default=120.0)
@@ -886,6 +898,7 @@ def main():
         connectivity_height=args.z_conn,
         surface_clearance=args.clearance,
         distance_field_max=args.dist_max,
+        topo_node_name=args.node_name,
         service_timeout_sec=args.service_timeout,
         map_load_timeout_sec=args.map_load_timeout,
     )
