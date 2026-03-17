@@ -3,6 +3,7 @@
 #include "topo_nav/room_segmenter.hpp"
 #include "topo_nav/floor_detector.hpp"
 
+#include <cstdint>
 #include <memory>
 #include <tuple>
 #include <vector>
@@ -96,23 +97,47 @@ private:
 
   // ── HPA* precomputation ───────────────────────────────────────────────────
 
-  /// Precomputed intra-room path between two doorway transition surfaces.
-  struct TransferEntry {
-    std::vector<int> surf_path;  ///< Surface-graph indices restricted to room
-    double cost = 0.0;           ///< Actual voxel A* path cost (metres-equivalent)
-  };
-
   /// Precompute all pairwise intra-room transfers.  Called by setTopoMap().
   void precomputeTransfers();
 
-  /// transfer_table_[room_id][edge_in_idx][edge_out_idx] = TransferEntry
-  std::unordered_map<int,
-    std::unordered_map<int,
-      std::unordered_map<int, TransferEntry>>> transfer_table_;
+  /// Flat transfer table indexed by [e_in * transfer_E_ + e_out].
+  ///
+  /// transfer_E_ = total number of room edges (rg_.edges.size()).
+  /// transfer_cost_[e_in * E + e_out]  = actual voxel path cost (INF = no path).
+  /// transfer_path_[e_in * E + e_out]  = surface-graph indices (empty = no path).
+  ///
+  /// Space: E² × (8 B cost + sizeof(vector) path) ≈ 40 KB for E=50.
+  int transfer_E_ = 0;
+  std::vector<double>           transfer_cost_;   ///< [e_in * E + e_out], INF = no path
+  std::vector<std::vector<int>> transfer_path_;   ///< [e_in * E + e_out], empty = no path
 
-  /// min_exit_cost_[room_id][edge_out_idx] = min traversal cost over all entries.
-  /// Used by roomAstar() for tighter edge-cost estimates.
-  std::unordered_map<int, std::unordered_map<int, double>> min_exit_cost_;
+  /// Flat minimum exit cost table indexed by [room_id * transfer_E_ + edge_out].
+  /// Stores the minimum actual voxel traversal cost within room r to reach
+  /// edge_out, minimised over all possible entry edges into room r.
+  /// Used by roomAstar() for tighter (precomputed) edge-cost estimates.
+  ///
+  /// Space: R × E × 8 B ≈ 7 KB for R=18, E=50.
+  std::vector<double> min_exit_cost_flat_;  ///< [room * E + edge_out], INF = no path
+
+  // ── Dirty-array A* state (space-for-time: eliminates per-call O(n) init) ──
+  //
+  // Instead of zeroing 3 × n-element arrays before every voxelAstar() call
+  // (650 KB × 108 calls = 70 MB of memset during precomputeTransfers()),
+  // we maintain persistent arrays and a monotone generation counter.
+  //
+  // A cell i is "initialised in the current call" iff
+  //   astar_g_gen_[i]  == astar_gen_   (for g and came_from)
+  //   astar_cl_gen_[i] == astar_gen_   (for the closed set)
+  //
+  // Bumping the counter (O(1)) "resets" all cells without touching them.
+  // The arrays are allocated once in setTopoMap() and reused forever.
+  //
+  // Extra space: 2 × n × 4 B = 400 KB for n = 50 000.
+  mutable std::vector<double>   astar_g_;           ///< g-cost (valid only if gen matches)
+  mutable std::vector<int>      astar_came_from_;   ///< predecessor (valid if gen matches)
+  mutable std::vector<uint32_t> astar_g_gen_;       ///< generation when g/came_from written
+  mutable std::vector<uint32_t> astar_cl_gen_;      ///< generation when node closed
+  mutable uint32_t              astar_gen_ = 0;     ///< current generation counter
 
   // ── State ─────────────────────────────────────────────────────────────────
   std::shared_ptr<jps_planner_3d::VoxelMap> vmap_;
