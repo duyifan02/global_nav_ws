@@ -283,7 +283,7 @@ private:
 
     RCLCPP_INFO(get_logger(),
       "BuildTopoMap: %d rooms (%d staircases, %d corridors), "
-      "%d floors, %.1f ms",
+      "%d floors, %.1f ms (incl. HPA* precomputation)",
       res->num_rooms, res->num_staircases, res->num_corridors,
       res->num_floors, res->build_time_ms);
   }

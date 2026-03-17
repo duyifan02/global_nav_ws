@@ -25,6 +25,61 @@ void HierarchicalPlanner::setTopoMap(const RoomGraph & rg, const FloorGraph & fg
   rg_ = rg;
   fg_ = fg;
   has_topo_map_ = true;
+  transfer_table_.clear();
+  min_exit_cost_.clear();
+  precomputeTransfers();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HPA* precomputation: intra-room transition-to-transition voxel paths
+// ─────────────────────────────────────────────────────────────────────────────
+void HierarchicalPlanner::precomputeTransfers()
+{
+  const double INF = std::numeric_limits<double>::infinity();
+
+  for (int r = 0; r < rg_.num_rooms; ++r) {
+    const auto adj_it = rg_.adjacency.find(r);
+    if (adj_it == rg_.adjacency.end()) continue;
+
+    // Collect (edge_idx, transition_surf on room-r side) for all incident edges
+    std::vector<std::pair<int, int>> incident;
+    incident.reserve(adj_it->second.size());
+    for (auto & [nbr, eidx] : adj_it->second) {
+      const auto & edge = rg_.edges[eidx];
+      const int t = (edge.room_i == r) ? edge.transition_surf_i
+                                       : edge.transition_surf_j;
+      incident.emplace_back(eidx, t);
+    }
+    if (incident.size() < 2) continue;  // dead-end room: nothing to transfer
+
+    auto & tmap = transfer_table_[r];
+    auto & mmap = min_exit_cost_[r];
+
+    for (size_t ii = 0; ii < incident.size(); ++ii) {
+      for (size_t jj = 0; jj < incident.size(); ++jj) {
+        if (ii == jj) continue;
+        const auto [ei, t_i] = incident[ii];
+        const auto [ej, t_j] = incident[jj];
+
+        TransferEntry entry;
+        auto path = voxelAstar(t_i, t_j, r);
+        if (!path.empty()) {
+          entry.cost      = computePathLength(path);
+          entry.surf_path = std::move(path);
+        } else {
+          entry.cost = INF;
+        }
+
+        // Track minimum exit cost for edge ej across all possible entries
+        auto it = mmap.find(ej);
+        if (it == mmap.end() || entry.cost < it->second) {
+          mmap[ej] = entry.cost;
+        }
+
+        tmap[ei][ej] = std::move(entry);
+      }
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -196,20 +251,44 @@ std::vector<int> HierarchicalPlanner::roomAstar(
       const auto & edge = rg_.edges[eidx];
       if (edge.passage_width_m < robot_diameter_m) continue;  // too narrow
 
-      // Edge cost: centroid → transition point → centroid (Eq. 13 in paper)
       const auto & rm_cur = rg_.rooms[cur];
       const auto & rm_nbr = rg_.rooms[nbr];
-      const double dtx = edge.trans_wx - rm_cur.cx;
-      const double dty = edge.trans_wy - rm_cur.cy;
-      const double dtz = edge.trans_wz - rm_cur.cz;
-      const double d1  = std::sqrt(dtx * dtx + dty * dty + dtz * dtz);
 
+      // Within-room traversal cost: use precomputed minimum if available,
+      // otherwise fall back to Euclidean centroid→transition estimate.
+      double within_cost;
+      {
+        const auto r_it = min_exit_cost_.find(cur);
+        if (r_it != min_exit_cost_.end()) {
+          const auto c_it = r_it->second.find(eidx);
+          if (c_it != r_it->second.end()) {
+            if (c_it->second >= std::numeric_limits<double>::infinity()) {
+              continue;  // No valid path through this exit
+            }
+            within_cost = c_it->second;
+          } else {
+            // Edge not in table (single-incident room): Euclidean fallback
+            const double dtx = edge.trans_wx - rm_cur.cx;
+            const double dty = edge.trans_wy - rm_cur.cy;
+            const double dtz = edge.trans_wz - rm_cur.cz;
+            within_cost = std::sqrt(dtx * dtx + dty * dty + dtz * dtz);
+          }
+        } else {
+          // Room has no precomputed transfers (single edge): Euclidean fallback
+          const double dtx = edge.trans_wx - rm_cur.cx;
+          const double dty = edge.trans_wy - rm_cur.cy;
+          const double dtz = edge.trans_wz - rm_cur.cz;
+          within_cost = std::sqrt(dtx * dtx + dty * dty + dtz * dtz);
+        }
+      }
+
+      // Cost from transition point to neighbor centroid (Euclidean approximation)
       const double dtx2 = rm_nbr.cx - edge.trans_wx;
       const double dty2 = rm_nbr.cy - edge.trans_wy;
       const double dtz2 = rm_nbr.cz - edge.trans_wz;
       const double d2   = std::sqrt(dtx2 * dtx2 + dty2 * dty2 + dtz2 * dtz2);
 
-      const double cost = g[cur] + d1 + d2;
+      const double cost = g[cur] + within_cost + d2;
       if (cost < g[nbr]) {
         g[nbr]        = cost;
         came_from[nbr] = cur;
@@ -389,50 +468,80 @@ HierarchicalPath HierarchicalPlanner::plan(
   for (int k = 0; k < P; ++k) {
     const int cur_room = room_seq[k];
 
-    // Determine exit waypoint of this room
+    // ── Find exit edge / surface for this room ────────────────────────────
+    int exit_eidx = -1;
     int exit_surf;
     if (k < P - 1) {
-      // Find the edge between room_seq[k] and room_seq[k+1]
       const int next_room = room_seq[k + 1];
-      int eidx = -1;
       const auto it = rg_.adjacency.find(cur_room);
       if (it != rg_.adjacency.end()) {
         for (auto & [nbr, ei] : it->second) {
-          if (nbr == next_room) { eidx = ei; break; }
+          if (nbr == next_room) { exit_eidx = ei; break; }
         }
       }
-      if (eidx < 0) {
+      if (exit_eidx < 0) {
         result.message = "No edge between consecutive rooms in sequence.";
         return result;
       }
-      const auto & edge = rg_.edges[eidx];
-      // Exit through the room_i or room_j side depending on direction
-      exit_surf = (edge.room_i == cur_room)
-                  ? edge.transition_surf_i
-                  : edge.transition_surf_j;
+      const auto & edge = rg_.edges[exit_eidx];
+      exit_surf = (edge.room_i == cur_room) ? edge.transition_surf_i
+                                            : edge.transition_surf_j;
     } else {
       exit_surf = goal_surf;
     }
 
-    // Plan voxel path from prev_entry to exit_surf within cur_room
-    std::vector<int> seg = voxelAstar(prev_entry, exit_surf, cur_room);
-    if (seg.empty()) {
-      // Fallback: unrestricted voxel A* for this segment
-      seg = voxelAstar(prev_entry, exit_surf, -1);
+    // ── Build voxel segment for this room ─────────────────────────────────
+    std::vector<int> seg;
+
+    // Middle rooms: try precomputed HPA* transfer path
+    if (k > 0 && k < P - 1) {
+      const int prev_room    = room_seq[k - 1];
+      int entry_eidx = -1;
+      const auto it = rg_.adjacency.find(cur_room);
+      if (it != rg_.adjacency.end()) {
+        for (auto & [nbr, ei] : it->second) {
+          if (nbr == prev_room) { entry_eidx = ei; break; }
+        }
+      }
+
+      if (entry_eidx >= 0) {
+        const auto r_it = transfer_table_.find(cur_room);
+        if (r_it != transfer_table_.end()) {
+          const auto in_it = r_it->second.find(entry_eidx);
+          if (in_it != r_it->second.end()) {
+            const auto out_it = in_it->second.find(exit_eidx);
+            if (out_it != in_it->second.end() &&
+                !out_it->second.surf_path.empty())
+            {
+              seg = out_it->second.surf_path;  // precomputed path (copy)
+            }
+          }
+        }
+      }
     }
+
+    // First / last room (or middle room with no precomputed path): runtime A*
+    if (seg.empty()) {
+      seg = voxelAstar(prev_entry, exit_surf, cur_room);
+      if (seg.empty()) {
+        seg = voxelAstar(prev_entry, exit_surf, -1);  // unrestricted fallback
+      }
+    }
+
     if (seg.empty()) {
       result.message = "Voxel-level A* failed in room " + std::to_string(cur_room);
       return result;
     }
 
-    // Append segment (skip first element to avoid duplication)
-    for (size_t si = 1; si < seg.size(); ++si) {
+    // ── Append segment to path ────────────────────────────────────────────
+    // Skip the first element if it duplicates the last appended voxel.
+    const size_t start_si = (seg.front() == all_surf_path.back()) ? 1u : 0u;
+    for (size_t si = start_si; si < seg.size(); ++si) {
       all_surf_path.push_back(seg[si]);
     }
-    // Rough expanded-node count (each segment contributes proportionally)
     total_expanded += static_cast<int>(seg.size());
 
-    // Set up entry for next room: find the neighbor of exit_surf in next room
+    // ── Set up entry for next room ────────────────────────────────────────
     if (k < P - 1) {
       const int next_room = room_seq[k + 1];
       const auto & graph    = vmap_->getSurfaceGraph();
@@ -440,32 +549,23 @@ HierarchicalPath HierarchicalPlanner::plan(
       const auto & nd = graph[exit_surf];
 
       int entry_next = -1;
-      // Prefer the neighbor with the highest D value for better clearance
+      // Prefer neighbor with highest D (clearance) in next room
       int best_d = -1;
       for (int ni = 0; ni < nd.neighbor_count; ++ni) {
         const int q = all_nbrs[nd.neighbor_start + ni];
         if (rg_.room_labels[q] == next_room) {
           if (graph[q].distance > best_d) {
-            best_d = graph[q].distance;
+            best_d    = graph[q].distance;
             entry_next = q;
           }
         }
       }
       if (entry_next < 0) {
-        // No direct neighbor in next room — fall back to transition_surf_j/i
-        const int eidx_fallback = [&]() -> int {
-          const auto it = rg_.adjacency.find(cur_room);
-          if (it == rg_.adjacency.end()) return -1;
-          for (auto & [nbr, ei] : it->second) {
-            if (nbr == next_room) return ei;
-          }
-          return -1;
-        }();
-        if (eidx_fallback >= 0) {
-          const auto & edge = rg_.edges[eidx_fallback];
-          entry_next = (edge.room_i == next_room)
-                       ? edge.transition_surf_i
-                       : edge.transition_surf_j;
+        // Fallback: canonical transition surface on next room's side
+        if (exit_eidx >= 0) {
+          const auto & edge = rg_.edges[exit_eidx];
+          entry_next = (edge.room_i == next_room) ? edge.transition_surf_i
+                                                   : edge.transition_surf_j;
         }
       }
       if (entry_next < 0) {
@@ -473,7 +573,6 @@ HierarchicalPath HierarchicalPlanner::plan(
         return result;
       }
 
-      // Add the cross-boundary step
       if (entry_next != all_surf_path.back()) {
         all_surf_path.push_back(entry_next);
       }

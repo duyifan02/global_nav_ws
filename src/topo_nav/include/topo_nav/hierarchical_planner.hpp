@@ -94,6 +94,26 @@ private:
 
   double computePathLength(const std::vector<int> & surf_indices) const;
 
+  // ── HPA* precomputation ───────────────────────────────────────────────────
+
+  /// Precomputed intra-room path between two doorway transition surfaces.
+  struct TransferEntry {
+    std::vector<int> surf_path;  ///< Surface-graph indices restricted to room
+    double cost = 0.0;           ///< Actual voxel A* path cost (metres-equivalent)
+  };
+
+  /// Precompute all pairwise intra-room transfers.  Called by setTopoMap().
+  void precomputeTransfers();
+
+  /// transfer_table_[room_id][edge_in_idx][edge_out_idx] = TransferEntry
+  std::unordered_map<int,
+    std::unordered_map<int,
+      std::unordered_map<int, TransferEntry>>> transfer_table_;
+
+  /// min_exit_cost_[room_id][edge_out_idx] = min traversal cost over all entries.
+  /// Used by roomAstar() for tighter edge-cost estimates.
+  std::unordered_map<int, std::unordered_map<int, double>> min_exit_cost_;
+
   // ── State ─────────────────────────────────────────────────────────────────
   std::shared_ptr<jps_planner_3d::VoxelMap> vmap_;
   double w_up_, w_down_, w_obs_;
