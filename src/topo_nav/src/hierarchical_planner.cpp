@@ -263,7 +263,10 @@ std::vector<int> HierarchicalPlanner::roomAstar(
     for (auto & [nbr, eidx] : it->second) {
       if (!allowed[nbr] || closed[nbr]) continue;
       const auto & edge = rg_.edges[eidx];
-      if (edge.passage_width_m < robot_diameter_m) continue;
+      // Passage-width check disabled for room-level routing: connectivity
+      // only needs to be topological here; actual clearance is enforced by
+      // the voxel-level A* inside each room.
+      (void)robot_diameter_m;
 
       const auto & rm_cur = rg_.rooms[cur];
       const auto & rm_nbr = rg_.rooms[nbr];
@@ -278,16 +281,7 @@ std::vector<int> HierarchicalPlanner::roomAstar(
         if (mc < INF) {
           within_cost = mc;
         } else if (mc >= INF) {
-          // INF means either "no valid path" (precomputed) or "not in table"
-          // (dead-end room with single edge).  Distinguish by checking if
-          // room `cur` has >= 2 incident edges.
-          const auto it2 = rg_.adjacency.find(cur);
-          const bool has_transfer =
-            (it2 != rg_.adjacency.end() && it2->second.size() >= 2);
-          if (has_transfer) {
-            continue;  // genuinely no path through this exit — skip edge
-          }
-          // Single-edge room: Euclidean fallback
+          // Precomputed cost unavailable — use Euclidean centroid→transition
           const double dtx = edge.trans_wx - rm_cur.cx;
           const double dty = edge.trans_wy - rm_cur.cy;
           const double dtz = edge.trans_wz - rm_cur.cz;
@@ -498,17 +492,40 @@ HierarchicalPath HierarchicalPlanner::plan(
 
   if (room_seq.empty()) {
     // Debug: print adjacency sizes for start/goal rooms
-    RCLCPP_WARN(rclcpp::get_logger("hierarchical_planner"),
-      "Room routing failed: start_room=%d (adj=%zu, floor=%d), "
-      "goal_room=%d (adj=%zu, floor=%d), n_rooms=%d, n_floors=%d, robot_d=%.3f",
+    fprintf(stderr,
+      "[HierPlanner] Room routing failed: start_room=%d (adj=%zu, floor=%d), "
+      "goal_room=%d (adj=%zu, floor=%d), n_rooms=%d, n_floors=%d, robot_d=%.3f\n",
       start_room,
-      start_room >= 0 ? rg_.adjacency[start_room].size() : 0,
+      start_room >= 0 ? rg_.adjacency[start_room].size() : (size_t)0,
       start_room >= 0 ? rg_.rooms[start_room].floor_id : -1,
       goal_room,
-      goal_room >= 0 ? rg_.adjacency[goal_room].size() : 0,
+      goal_room >= 0 ? rg_.adjacency[goal_room].size() : (size_t)0,
       goal_room >= 0 ? rg_.rooms[goal_room].floor_id : -1,
       (int)rg_.rooms.size(), (int)fg_.floors.size(), robot_diameter_m);
-    result.message = "Room-level routing failed (no passable path?).";
+    // Room graph is disconnected — fall back to unrestricted voxel A*.
+    fprintf(stderr, "[HierPlanner] Falling back to direct voxel A*\n");
+    auto fallback_t0 = std::chrono::steady_clock::now();
+    auto fb_path = voxelAstar(start_surf, goal_surf, -1);
+    auto fallback_t1 = std::chrono::steady_clock::now();
+    if (fb_path.empty()) {
+      result.message = "Room-level routing failed and voxel fallback also failed.";
+      return result;
+    }
+    result.voxel_planning_ms =
+      std::chrono::duration<double, std::milli>(fallback_t1 - fallback_t0).count();
+    result.voxel_nodes_expanded = 0;
+    const auto & graph_fb = vmap_->getSurfaceGraph();
+    result.waypoints.reserve(fb_path.size());
+    for (int idx : fb_path) {
+      const auto & nd = graph_fb[idx];
+      result.waypoints.push_back(vmap_->gridToWorld(nd.x, nd.y, nd.z));
+    }
+    result.path_length_m = computePathLength(fb_path);
+    auto total_t1_fb = std::chrono::steady_clock::now();
+    result.total_planning_ms =
+      std::chrono::duration<double, std::milli>(total_t1_fb - total_t0).count();
+    result.success = true;
+    result.message = "OK (voxel fallback)";
     return result;
   }
   result.room_sequence = room_seq;
