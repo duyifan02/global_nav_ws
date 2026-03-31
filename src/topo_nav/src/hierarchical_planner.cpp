@@ -473,17 +473,19 @@ HierarchicalPath HierarchicalPlanner::plan(
     return result;
   }
 
-  // ── Step 1: Floor-level routing ───────────────────────────────────────────
+  // ── Step 1: Floor-level routing (flat mode: allow all floors) ────────────
   auto floor_t0 = std::chrono::steady_clock::now();
-  const std::vector<int> floor_seq = floorAstar(start_floor, goal_floor);
+  // Build all-floors list so roomAstar can traverse the full room graph
+  // without being constrained by floor boundaries. This is equivalent to
+  // treating the entire building as a single flat topology (room + corridor).
+  std::vector<int> floor_seq;
+  const int n_floors = static_cast<int>(fg_.floors.size());
+  floor_seq.reserve(n_floors > 0 ? n_floors : 1);
+  for (int f = 0; f < n_floors; ++f) floor_seq.push_back(f);
+  if (floor_seq.empty()) floor_seq.push_back(0);  // fallback: single floor
   auto floor_t1 = std::chrono::steady_clock::now();
   result.floor_planning_ms =
     std::chrono::duration<double, std::milli>(floor_t1 - floor_t0).count();
-
-  if (floor_seq.empty()) {
-    result.message = "Floor-level routing failed (disconnected floors?).";
-    return result;
-  }
   result.floor_sequence = floor_seq;
 
   // ── Step 2: Room-level routing ────────────────────────────────────────────
