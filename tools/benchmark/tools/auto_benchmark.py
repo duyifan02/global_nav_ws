@@ -47,6 +47,7 @@ CSV 列说明:
 import argparse
 import csv
 import sys
+import threading
 import time
 from pathlib import Path
 from datetime import datetime
@@ -200,17 +201,22 @@ class AutoBenchmarkNode(Node):
 
     def _call_service(self, client, request, name: str,
                       timeout_sec: Optional[float] = None):
+        """call_async + 阻塞等待 future，兼容 executor 已在后台 spin 的情况。"""
         t = float(timeout_sec if timeout_sec is not None else self.service_timeout_sec)
         try:
-            response = client.call(request, timeout_sec=t)
-        except TypeError:
-            response = client.call(request)
+            future = client.call_async(request)
+            # 等待 future 完成，轮询间隔 10ms
+            deadline = time.time() + t
+            while not future.done():
+                if time.time() > deadline:
+                    self.get_logger().error(
+                        f'{name} 超时或失败 (timeout={t:.1f}s)')
+                    return None
+                time.sleep(0.01)
+            return future.result()
         except Exception as exc:
             self.get_logger().error(f'{name} 调用异常: {exc}')
             return None
-        if response is None:
-            self.get_logger().error(f'{name} 超时或失败 (timeout={t:.1f}s)')
-        return response
 
     def wait_for_jps_services(self) -> bool:
         self.get_logger().info('等待 JPS 服务...')
@@ -578,6 +584,9 @@ def main():
     )
     executor = MultiThreadedExecutor()
     executor.add_node(node)
+    # 在后台线程 spin，使 call_async future 能被正确处理
+    spin_thread = threading.Thread(target=executor.spin, daemon=True)
+    spin_thread.start()
 
     try:
         # ── Check service availability ────────────────────────────────────────
