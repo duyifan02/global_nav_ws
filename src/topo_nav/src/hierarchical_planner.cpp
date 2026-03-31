@@ -497,6 +497,17 @@ HierarchicalPath HierarchicalPlanner::plan(
     std::chrono::duration<double, std::milli>(room_t1 - room_t0).count();
 
   if (room_seq.empty()) {
+    // Debug: print adjacency sizes for start/goal rooms
+    RCLCPP_WARN(rclcpp::get_logger("hierarchical_planner"),
+      "Room routing failed: start_room=%d (adj=%zu, floor=%d), "
+      "goal_room=%d (adj=%zu, floor=%d), n_rooms=%d, n_floors=%d, robot_d=%.3f",
+      start_room,
+      start_room >= 0 ? rg_.adjacency[start_room].size() : 0,
+      start_room >= 0 ? rg_.rooms[start_room].floor_id : -1,
+      goal_room,
+      goal_room >= 0 ? rg_.adjacency[goal_room].size() : 0,
+      goal_room >= 0 ? rg_.rooms[goal_room].floor_id : -1,
+      (int)rg_.rooms.size(), (int)fg_.floors.size(), robot_diameter_m);
     result.message = "Room-level routing failed (no passable path?).";
     return result;
   }
