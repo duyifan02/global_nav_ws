@@ -88,10 +88,10 @@ void HierarchicalPlanner::precomputeTransfers()
     if (incident.size() < 2) continue;  // dead-end: no through-paths to precompute
 
     // Guard against combinatorial explosion in highly-connected rooms.
-    // With Scheme 2 (Dijkstra), cost is K Dijkstra calls instead of K*(K-1) A*,
-    // but very large rooms with many edges still dominate precompute time.
-    // Cap at ~15 edges (each Dijkstra visits all room voxels).
-    static constexpr size_t kMaxEdgesForDijkstra = 15;
+    // With Scheme 2 (Dijkstra), cost is K Dijkstra calls × room_voxels.
+    // Cap: skip rooms where K * room_voxels > threshold (≈ 10-edge room with
+    // typical size).  K=10 edges: 10*(10-1)=90 transfers — matches old v3 cap.
+    static constexpr size_t kMaxEdgesForDijkstra = 10;
     if (incident.size() > kMaxEdgesForDijkstra) {
       const auto & graph_skip = vmap_->getSurfaceGraph();
       int skip_vx = 0;
