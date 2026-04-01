@@ -70,6 +70,8 @@ void HierarchicalPlanner::precomputeTransfers()
   transfer_path_.resize(static_cast<size_t>(E) * E);  // default empty vectors
   min_exit_cost_flat_.assign(static_cast<size_t>(R) * E, INF);
 
+  trans_field_.clear();
+
   for (int r = 0; r < R; ++r) {
     const auto adj_it = rg_.adjacency.find(r);
     if (adj_it == rg_.adjacency.end()) continue;
@@ -85,23 +87,79 @@ void HierarchicalPlanner::precomputeTransfers()
     }
     if (incident.size() < 2) continue;  // dead-end: no through-paths to precompute
 
+    // Guard against combinatorial explosion in highly-connected rooms.
+    // With Scheme 2 (Dijkstra), cost is K Dijkstra calls instead of K*(K-1) A*,
+    // but very large rooms with many edges still dominate precompute time.
+    // Cap at ~15 edges (each Dijkstra visits all room voxels).
+    static constexpr size_t kMaxEdgesForDijkstra = 15;
+    if (incident.size() > kMaxEdgesForDijkstra) {
+      const auto & graph_skip = vmap_->getSurfaceGraph();
+      int skip_vx = 0;
+      for (int vi = 0; vi < static_cast<int>(graph_skip.size()); ++vi)
+        if (rg_.room_labels[vi] == r) ++skip_vx;
+      fprintf(stderr,
+        "[HPA*] room %3d: %4d voxels, %zu edges — skipping precompute "
+        "(> %zu edge cap); roomAstar will use Euclidean fallback\n",
+        r, skip_vx, incident.size(), kMaxEdgesForDijkstra);
+      continue;
+    }
+
+    const auto r_t0 = std::chrono::steady_clock::now();
+    int room_voxels = 0;
+    const auto & graph_diag = vmap_->getSurfaceGraph();
+    for (int vi = 0; vi < static_cast<int>(graph_diag.size()); ++vi)
+      if (rg_.room_labels[vi] == r) ++room_voxels;
+
+    // Scheme 2: k single-source Dijkstra replaces k*(k-1) pairwise A*.
+    // Each Dijkstra gives distances from one transition to ALL room voxels,
+    // yielding transfer costs + reusable distance fields in one pass.
     for (size_t ii = 0; ii < incident.size(); ++ii) {
+      const auto [ei, t_i] = incident[ii];
+
+      // Run exhaustive Dijkstra from t_i within room r
+      TransitionField field;
+      roomDijkstra(t_i, r, field.dist, field.parent);
+
+      // Extract transfer costs to all other incident transitions
       for (size_t jj = 0; jj < incident.size(); ++jj) {
         if (ii == jj) continue;
-        const auto [ei, t_i] = incident[ii];
         const auto [ej, t_j] = incident[jj];
 
-        auto path = voxelAstar(t_i, t_j, r);
-        const double cost = path.empty() ? INF : computePathLength(path);
+        auto dit = field.dist.find(t_j);
+        const double cost = (dit != field.dist.end()) ? dit->second : INF;
 
         const int slot = ei * E + ej;
         transfer_cost_[slot] = cost;
-        if (!path.empty()) transfer_path_[slot] = std::move(path);
+
+        // Reconstruct path from parent chain
+        if (cost < INF) {
+          std::vector<int> path;
+          int cur = t_j;
+          while (cur >= 0) {
+            path.push_back(cur);
+            if (cur == t_i) break;
+            auto pit = field.parent.find(cur);
+            cur = (pit != field.parent.end()) ? pit->second : -1;
+          }
+          std::reverse(path.begin(), path.end());
+          transfer_path_[slot] = std::move(path);
+        }
 
         // Track minimum exit cost for (room r, exit edge ej)
         double & mc = min_exit_cost_flat_[r * E + ej];
         if (cost < mc) mc = cost;
       }
+
+      // Store distance field for query-time O(1) lookup
+      trans_field_[t_i] = std::move(field);
+    }
+
+    const auto r_t1 = std::chrono::steady_clock::now();
+    const double r_ms = std::chrono::duration<double, std::milli>(r_t1 - r_t0).count();
+    if (r_ms > 5.0) {
+      fprintf(stderr,
+        "[HPA*] room %3d: %4d voxels, %zu edges, %zu Dijkstra calls, %.1f ms\n",
+        r, room_voxels, incident.size(), incident.size(), r_ms);
     }
   }
 }
@@ -201,111 +259,154 @@ std::vector<int> HierarchicalPlanner::floorAstar(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Step 2: Room-level A*
+// Step 2: Room-level A* with HPA*-accurate edge costs
+//
+// State = (entry_edge_idx, room_id), encoded as entry_edge * R + room_id.
+// "I arrived in room_id by crossing entry_edge_idx from the other side."
+//
+// Within-room traversal cost: transfer_cost_[entry_ei * E + exit_ej]
+//   — the exact precomputed voxel path cost through room_id from entry_ei's
+//     transition to exit_ej's transition.
+//
+// This is the correct HPA* formulation: the cost of traversing a room depends
+// on BOTH the entry edge and the exit edge, not just the exit edge.
+// The previous approach (min_exit_cost_flat_) discarded entry direction and
+// could produce suboptimal room sequences.
+//
+// State space: E × R ≤ 10 000 for typical indoor scenes.  Much smaller than
+// the voxel graph, so memory and runtime are negligible.
 // ─────────────────────────────────────────────────────────────────────────────
 std::vector<int> HierarchicalPlanner::roomAstar(
   int start_room,
   int goal_room,
+  const std::tuple<double, double, double> & start_world,
+  const std::tuple<double, double, double> & goal_world,
   const std::vector<int> & allowed_floors,
-  float robot_diameter_m) const
+  float /*robot_diameter_m*/) const
 {
   if (start_room == goal_room) return {start_room};
 
   const int R = rg_.num_rooms;
   const int E = transfer_E_;
+  if (E == 0 || R == 0) return {};
+
   const double INF = std::numeric_limits<double>::infinity();
 
   std::unordered_set<int> floor_set(allowed_floors.begin(), allowed_floors.end());
-  std::vector<bool> allowed(R, false);
-  for (int r = 0; r < R; ++r) {
-    if (floor_set.count(rg_.rooms[r].floor_id)) allowed[r] = true;
-    if (rg_.rooms[r].type == RoomType::STAIRCASE) allowed[r] = true;
-  }
-  allowed[start_room] = true;
-  allowed[goal_room]  = true;
+  auto room_allowed = [&](int r) -> bool {
+    if (r == start_room || r == goal_room) return true;
+    if (rg_.rooms[r].type == RoomType::STAIRCASE) return true;
+    return (bool)floor_set.count(rg_.rooms[r].floor_id);
+  };
 
-  std::vector<double> g(R, INF);
-  std::vector<int>    came_from(R, -1);
-  std::vector<bool>   closed(R, false);
+  // State: entry_edge_idx * R + room_id  (came_from value -1 = virtual start)
+  const int STATE_COUNT = E * R;
+  std::vector<double> g(STATE_COUNT, INF);
+  std::vector<int>    came_from(STATE_COUNT, -2);  // -2 = not reached
+  std::vector<bool>   closed(STATE_COUNT, false);
 
   using QElem = std::pair<double, int>;
   std::priority_queue<QElem, std::vector<QElem>, std::greater<QElem>> open;
 
-  g[start_room] = 0.0;
-  open.emplace(0.0, start_room);
-
-  const auto & gr = rg_.rooms[goal_room];
-  auto h = [&](int r) -> double {
-    const auto & rm = rg_.rooms[r];
-    const double dx = rm.cx - gr.cx;
-    const double dy = rm.cy - gr.cy;
-    const double dz = rm.cz - gr.cz;
+  // Heuristic: Euclidean from edge transition to the actual goal world position.
+  // This is admissible: straight-line distance ≤ any realizable path length.
+  // Using goal_world (not goal_room centroid) prevents inadmissibility when
+  // goal_surf is closer to the current transition than the centroid is.
+  const auto [gx, gy, gz] = goal_world;
+  auto h = [&](int ei) -> double {
+    const auto & edge = rg_.edges[ei];
+    const double dx = edge.trans_wx - gx;
+    const double dy = edge.trans_wy - gy;
+    const double dz = edge.trans_wz - gz;
     return std::sqrt(dx * dx + dy * dy + dz * dz);
   };
 
-  while (!open.empty()) {
-    auto [_, cur] = open.top(); open.pop();
-    if (closed[cur]) continue;
-    if (cur == goal_room) {
-      std::vector<int> path;
-      for (int r = cur; r >= 0; r = came_from[r]) {
-        path.push_back(r);
-        if (r == start_room) break;
-      }
-      std::reverse(path.begin(), path.end());
-      return path;
+  // ── Initialise: from start_room push all its exit edges ──────────────────
+  // Cost = Euclidean from actual start_world to each transition.
+  // Using start_world (not room centroid) gives a tighter cost estimate for
+  // the start-room traversal.
+  const auto [sx, sy, sz] = start_world;
+  const auto adj_start = rg_.adjacency.find(start_room);
+  if (adj_start == rg_.adjacency.end()) return {};
+
+  for (auto & [nbr, eidx] : adj_start->second) {
+    if (!room_allowed(nbr)) continue;
+    const auto & edge = rg_.edges[eidx];
+    const double dtx = edge.trans_wx - sx;
+    const double dty = edge.trans_wy - sy;
+    const double dtz = edge.trans_wz - sz;
+    const double init_cost = std::sqrt(dtx * dtx + dty * dty + dtz * dtz);
+
+    const int state = eidx * R + nbr;
+    if (init_cost < g[state]) {
+      g[state]          = init_cost;
+      came_from[state]  = -1;  // came from virtual start
+      open.emplace(init_cost + h(eidx), state);
     }
-    closed[cur] = true;
+  }
 
-    const auto it = rg_.adjacency.find(cur);
-    if (it == rg_.adjacency.end()) continue;
+  // ── A* main loop ─────────────────────────────────────────────────────────
+  while (!open.empty()) {
+    auto [_, cur_state] = open.top(); open.pop();
+    if (closed[cur_state]) continue;
+    closed[cur_state] = true;
 
-    for (auto & [nbr, eidx] : it->second) {
-      if (!allowed[nbr] || closed[nbr]) continue;
-      const auto & edge = rg_.edges[eidx];
-      // Passage-width check disabled for room-level routing: connectivity
-      // only needs to be topological here; actual clearance is enforced by
-      // the voxel-level A* inside each room.
-      (void)robot_diameter_m;
+    const int entry_ei = cur_state / R;
+    const int cur_room = cur_state % R;
 
-      const auto & rm_cur = rg_.rooms[cur];
-      const auto & rm_nbr = rg_.rooms[nbr];
+    // Goal check
+    if (cur_room == goal_room) {
+      // Reconstruct room sequence by following came_from chain
+      std::vector<int> room_path;
+      int s = cur_state;
+      while (s >= 0) {          // -1 = virtual start sentinel → stop
+        room_path.push_back(s % R);
+        s = came_from[s];
+      }
+      room_path.push_back(start_room);
+      std::reverse(room_path.begin(), room_path.end());
 
-      // Within-room traversal cost: flat lookup O(1).
-      // min_exit_cost_flat_[cur * E + eidx] = minimum actual voxel path cost
-      // to traverse room `cur` and exit via edge `eidx`, over all entry edges.
-      // Falls back to Euclidean centroid→transition if not precomputed.
-      double within_cost;
-      if (E > 0) {
-        const double mc = min_exit_cost_flat_[cur * E + eidx];
-        if (mc < INF) {
-          within_cost = mc;
-        } else if (mc >= INF) {
-          // Precomputed cost unavailable — use Euclidean centroid→transition
-          const double dtx = edge.trans_wx - rm_cur.cx;
-          const double dty = edge.trans_wy - rm_cur.cy;
-          const double dtz = edge.trans_wz - rm_cur.cz;
-          within_cost = std::sqrt(dtx * dtx + dty * dty + dtz * dtz);
-        }
-      } else {
-        // No precomputed table (build_topo_map not yet called?): Euclidean
-        const double dtx = edge.trans_wx - rm_cur.cx;
-        const double dty = edge.trans_wy - rm_cur.cy;
-        const double dtz = edge.trans_wz - rm_cur.cz;
-        within_cost = std::sqrt(dtx * dtx + dty * dty + dtz * dtz);
+      // Debug: print room sequence with voxel counts
+      fprintf(stderr, "[roomAstar] seq(%zu rooms): ", room_path.size());
+      const auto & graph_ra = vmap_->getSurfaceGraph();
+      for (int ri : room_path) {
+        int cnt = 0;
+        for (int vi = 0; vi < static_cast<int>(graph_ra.size()); ++vi)
+          if (rg_.room_labels[vi] == ri) ++cnt;
+        fprintf(stderr, "%d(%dvx) ", ri, cnt);
+      }
+      fprintf(stderr, "\n");
+
+      return room_path;
+    }
+
+    // ── Expand: traverse cur_room from entry_ei to each exit edge ────────
+    const auto adj_it = rg_.adjacency.find(cur_room);
+    if (adj_it == rg_.adjacency.end()) continue;
+
+    for (auto & [nbr, ejdx] : adj_it->second) {
+      if (ejdx == entry_ei) continue;   // no immediate back-tracking
+      if (!room_allowed(nbr)) continue;
+
+      // Exact precomputed transfer cost: entry_ei → ejdx through cur_room.
+      // Both edges are incident to cur_room, so this slot was filled during
+      // precomputeTransfers().  Falls back to Euclidean if unavailable.
+      double within_cost = transfer_cost_[entry_ei * E + ejdx];
+      if (within_cost >= INF) {
+        const auto & e_in  = rg_.edges[entry_ei];
+        const auto & e_out = rg_.edges[ejdx];
+        const double dx = e_out.trans_wx - e_in.trans_wx;
+        const double dy = e_out.trans_wy - e_in.trans_wy;
+        const double dz = e_out.trans_wz - e_in.trans_wz;
+        within_cost = std::sqrt(dx * dx + dy * dy + dz * dz);
       }
 
-      // Cost from transition to neighbour centroid (Euclidean approximation)
-      const double dtx2 = rm_nbr.cx - edge.trans_wx;
-      const double dty2 = rm_nbr.cy - edge.trans_wy;
-      const double dtz2 = rm_nbr.cz - edge.trans_wz;
-      const double d2   = std::sqrt(dtx2 * dtx2 + dty2 * dty2 + dtz2 * dtz2);
-
-      const double cost = g[cur] + within_cost + d2;
-      if (cost < g[nbr]) {
-        g[nbr]        = cost;
-        came_from[nbr] = cur;
-        open.emplace(cost + h(nbr), nbr);
+      const double new_g     = g[cur_state] + within_cost;
+      const int    next_state = ejdx * R + nbr;
+      if (new_g < g[next_state]) {
+        g[next_state]         = new_g;
+        came_from[next_state] = cur_state;
+        open.emplace(new_g + h(ejdx), next_state);
       }
     }
   }
@@ -321,8 +422,10 @@ std::vector<int> HierarchicalPlanner::roomAstar(
 // 2 000 out of 50 000 surface voxels), this removes a ~325× overhead ratio.
 // ─────────────────────────────────────────────────────────────────────────────
 std::vector<int> HierarchicalPlanner::voxelAstar(
-  int start_surf, int goal_surf, int allowed_room_id) const
+  int start_surf, int goal_surf, int allowed_room_id, int* out_expanded,
+  const std::unordered_set<int>* corridor) const
 {
+  if (out_expanded) *out_expanded = 0;
   if (start_surf == goal_surf) return {start_surf};
 
   const auto & graph    = vmap_->getSurfaceGraph();
@@ -403,6 +506,7 @@ std::vector<int> HierarchicalPlanner::voxelAstar(
 
     // Mark closed (dirty write)
     astar_cl_gen_[cur] = gen;
+    if (out_expanded) ++(*out_expanded);
 
     const auto & nd = graph[cur];
     for (int ni = 0; ni < nd.neighbor_count; ++ni) {
@@ -410,11 +514,13 @@ std::vector<int> HierarchicalPlanner::voxelAstar(
 
       if (astar_cl_gen_[nbr] == gen) continue;
 
-      // Room filter
-      if (allowed_room_id >= 0 &&
-          nbr != goal_surf &&
-          rg_.room_labels[nbr] != allowed_room_id)
-      {
+      // Room filter: corridor set takes priority over single-room filter
+      if (corridor) {
+        if (nbr != goal_surf && !corridor->count(rg_.room_labels[nbr]))
+          continue;
+      } else if (allowed_room_id >= 0 &&
+                 nbr != goal_surf &&
+                 rg_.room_labels[nbr] != allowed_room_id) {
         continue;
       }
 
@@ -430,6 +536,102 @@ std::vector<int> HierarchicalPlanner::voxelAstar(
     }
   }
   return {};
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scheme 2: Exhaustive single-source Dijkstra restricted to one room.
+//
+// Runs Dijkstra (no heuristic) from source_surf, visiting ALL reachable
+// voxels in room_id.  This produces a complete shortest-path tree from
+// the source transition to every room voxel.
+//
+// Called once per transition during precomputeTransfers(), replacing the
+// previous k*(k-1) pairwise A* calls with k single-source Dijkstra calls.
+// Also stores distance fields for O(1) query-time cost lookup.
+// ─────────────────────────────────────────────────────────────────────────────
+void HierarchicalPlanner::roomDijkstra(
+  int source_surf, int room_id,
+  std::unordered_map<int, double> & out_dist,
+  std::unordered_map<int, int>    & out_parent) const
+{
+  const auto & graph    = vmap_->getSurfaceGraph();
+  const auto & all_nbrs = vmap_->getAllNeighbors();
+  const double res = vmap_->getResolution();
+
+  // Dirty-array reset
+  ++astar_gen_;
+  if (astar_gen_ == 0u) {
+    std::fill(astar_g_gen_.begin(),  astar_g_gen_.end(),  0u);
+    std::fill(astar_cl_gen_.begin(), astar_cl_gen_.end(), 0u);
+    ++astar_gen_;
+  }
+  const uint32_t gen = astar_gen_;
+
+  auto edge_cost = [&](int from_idx, int to_idx) -> double {
+    const auto & nf = graph[from_idx];
+    const auto & nt = graph[to_idx];
+    const int dx = std::abs(nt.x - nf.x);
+    const int dy = std::abs(nt.y - nf.y);
+    const int dz_signed = nt.z - nf.z;
+    const int dz = std::abs(dz_signed);
+    const double eucl = res * std::sqrt(
+      static_cast<double>(dx*dx + dy*dy + dz*dz));
+    const double wz = (dz_signed > 0) ? w_up_ :
+                      (dz_signed < 0) ? w_down_ : 0.0;
+    const double z_cost = dz * res * wz;
+    const double clear  = w_obs_ * res / (nt.distance + 1);
+    return eucl + z_cost + clear;
+  };
+
+  using QElem = std::pair<double, int>;
+  std::priority_queue<QElem, std::vector<QElem>, std::greater<QElem>> open;
+
+  astar_g_gen_[source_surf]     = gen;
+  astar_g_[source_surf]         = 0.0;
+  astar_came_from_[source_surf] = -1;
+  open.emplace(0.0, source_surf);
+
+  // Track visited nodes for efficient extraction (avoids scanning all n voxels)
+  std::vector<int> visited;
+  visited.reserve(4096);
+
+  while (!open.empty()) {
+    auto [cur_g, cur] = open.top(); open.pop();
+    if (astar_cl_gen_[cur] == gen) continue;
+    astar_cl_gen_[cur] = gen;
+    visited.push_back(cur);
+
+    const auto & nd = graph[cur];
+    for (int ni = 0; ni < nd.neighbor_count; ++ni) {
+      const int nbr = all_nbrs[nd.neighbor_start + ni];
+      if (astar_cl_gen_[nbr] == gen) continue;
+
+      // Room restriction (source itself is always accessible)
+      if (room_id >= 0 && rg_.room_labels[nbr] != room_id) continue;
+
+      const double tentative_g = cur_g + edge_cost(cur, nbr);
+      const double nbr_g = (astar_g_gen_[nbr] == gen)
+                             ? astar_g_[nbr]
+                             : std::numeric_limits<double>::infinity();
+
+      if (tentative_g < nbr_g) {
+        astar_g_gen_[nbr]     = gen;
+        astar_g_[nbr]         = tentative_g;
+        astar_came_from_[nbr] = cur;
+        open.emplace(tentative_g, nbr);
+      }
+    }
+  }
+
+  // Extract results for visited nodes
+  out_dist.clear();
+  out_parent.clear();
+  out_dist.reserve(visited.size());
+  out_parent.reserve(visited.size());
+  for (int v : visited) {
+    out_dist[v]   = astar_g_[v];
+    out_parent[v] = astar_came_from_[v];
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -485,7 +687,7 @@ HierarchicalPath HierarchicalPlanner::plan(
   // ── Step 2: Room-level routing ────────────────────────────────────────────
   auto room_t0 = std::chrono::steady_clock::now();
   const std::vector<int> room_seq =
-    roomAstar(start_room, goal_room, floor_seq, robot_diameter_m);
+    roomAstar(start_room, goal_room, start_world, goal_world, floor_seq, robot_diameter_m);
   auto room_t1 = std::chrono::steady_clock::now();
   result.room_planning_ms =
     std::chrono::duration<double, std::milli>(room_t1 - room_t0).count();
@@ -505,7 +707,8 @@ HierarchicalPath HierarchicalPlanner::plan(
     // Room graph is disconnected — fall back to unrestricted voxel A*.
     fprintf(stderr, "[HierPlanner] Falling back to direct voxel A*\n");
     auto fallback_t0 = std::chrono::steady_clock::now();
-    auto fb_path = voxelAstar(start_surf, goal_surf, -1);
+    int fb_expanded = 0;
+    auto fb_path = voxelAstar(start_surf, goal_surf, -1, &fb_expanded);
     auto fallback_t1 = std::chrono::steady_clock::now();
     if (fb_path.empty()) {
       result.message = "Room-level routing failed and voxel fallback also failed.";
@@ -513,7 +716,7 @@ HierarchicalPath HierarchicalPlanner::plan(
     }
     result.voxel_planning_ms =
       std::chrono::duration<double, std::milli>(fallback_t1 - fallback_t0).count();
-    result.voxel_nodes_expanded = 0;
+    result.voxel_nodes_expanded = fb_expanded;
     const auto & graph_fb = vmap_->getSurfaceGraph();
     result.waypoints.reserve(fb_path.size());
     for (int idx : fb_path) {
@@ -530,114 +733,29 @@ HierarchicalPath HierarchicalPlanner::plan(
   }
   result.room_sequence = room_seq;
 
-  // ── Step 3: Voxel-level refinement ────────────────────────────────────────
+  // ── Step 3: Corridor A* (Scheme 1) ─────────────────────────────────────────
+  //
+  // Instead of running separate voxelAstar calls per room and stitching
+  // segments together, we run a SINGLE A* from start to goal with the
+  // room sequence as a corridor constraint.  Benefits:
+  //   - One priority queue construction (eliminates per-room fixed overhead)
+  //   - No path stitching artifacts at room boundaries
+  //   - Natural cross-room shortcuts within the corridor
+  //   - Code simplification: ~120 lines → ~15 lines
   auto voxel_t0 = std::chrono::steady_clock::now();
-
-  const int E = transfer_E_;
-  const int P = static_cast<int>(room_seq.size());
-  std::vector<int> all_surf_path;
-  all_surf_path.reserve(512);
-  all_surf_path.push_back(start_surf);
-
-  int prev_entry    = start_surf;
   int total_expanded = 0;
+  std::vector<int> all_surf_path;
 
-  for (int k = 0; k < P; ++k) {
-    const int cur_room = room_seq[k];
-
-    // ── Find exit edge / surface for this room ────────────────────────────
-    int exit_eidx = -1;
-    int exit_surf;
-    if (k < P - 1) {
-      const int next_room = room_seq[k + 1];
-      const auto it = rg_.adjacency.find(cur_room);
-      if (it != rg_.adjacency.end()) {
-        for (auto & [nbr, ei] : it->second) {
-          if (nbr == next_room) { exit_eidx = ei; break; }
-        }
-      }
-      if (exit_eidx < 0) {
-        result.message = "No edge between consecutive rooms in sequence.";
-        return result;
-      }
-      const auto & edge = rg_.edges[exit_eidx];
-      exit_surf = (edge.room_i == cur_room) ? edge.transition_surf_i
-                                            : edge.transition_surf_j;
-    } else {
-      exit_surf = goal_surf;
-    }
-
-    // ── Build voxel segment for this room ─────────────────────────────────
-    std::vector<int> seg;
-
-    // Middle rooms: flat O(1) lookup into precomputed transfer table
-    if (k > 0 && k < P - 1 && E > 0) {
-      const int prev_room = room_seq[k - 1];
-      int entry_eidx = -1;
-      const auto it = rg_.adjacency.find(cur_room);
-      if (it != rg_.adjacency.end()) {
-        for (auto & [nbr, ei] : it->second) {
-          if (nbr == prev_room) { entry_eidx = ei; break; }
-        }
-      }
-      if (entry_eidx >= 0 && exit_eidx >= 0) {
-        const auto & pre = transfer_path_[entry_eidx * E + exit_eidx];
-        if (!pre.empty()) {
-          seg = pre;  // copy precomputed path
-        }
-      }
-    }
-
-    // First / last room (or missing precomputed path): runtime A*
-    if (seg.empty()) {
-      seg = voxelAstar(prev_entry, exit_surf, cur_room);
-      if (seg.empty()) {
-        seg = voxelAstar(prev_entry, exit_surf, -1);
-      }
-    }
-
-    if (seg.empty()) {
-      result.message = "Voxel-level A* failed in room " + std::to_string(cur_room);
-      return result;
-    }
-
-    // ── Append segment (skip first element if it duplicates tail) ─────────
-    const size_t start_si = (seg.front() == all_surf_path.back()) ? 1u : 0u;
-    all_surf_path.insert(all_surf_path.end(),
-                         seg.begin() + start_si, seg.end());
-    total_expanded += static_cast<int>(seg.size());
-
-    // ── Set up entry for next room ────────────────────────────────────────
-    if (k < P - 1) {
-      const int next_room = room_seq[k + 1];
-      const auto & graph    = vmap_->getSurfaceGraph();
-      const auto & all_nbrs = vmap_->getAllNeighbors();
-      const auto & nd = graph[exit_surf];
-
-      int entry_next = -1;
-      int best_d = -1;
-      for (int ni = 0; ni < nd.neighbor_count; ++ni) {
-        const int q = all_nbrs[nd.neighbor_start + ni];
-        if (rg_.room_labels[q] == next_room && graph[q].distance > best_d) {
-          best_d     = graph[q].distance;
-          entry_next = q;
-        }
-      }
-      if (entry_next < 0 && exit_eidx >= 0) {
-        // Fallback: canonical transition surface on next room's side
-        const auto & edge = rg_.edges[exit_eidx];
-        entry_next = (edge.room_i == next_room) ? edge.transition_surf_i
-                                                 : edge.transition_surf_j;
-      }
-      if (entry_next < 0) {
-        result.message = "Cannot find entry into room " + std::to_string(next_room);
-        return result;
-      }
-
-      if (entry_next != all_surf_path.back()) {
-        all_surf_path.push_back(entry_next);
-      }
-      prev_entry = entry_next;
+  if (room_seq.size() <= 1) {
+    // Single room or empty: unrestricted search (allows cross-room shortcuts)
+    all_surf_path = voxelAstar(start_surf, goal_surf, -1, &total_expanded);
+  } else {
+    // Multi-room: build corridor from room sequence, single A* within it
+    std::unordered_set<int> corridor(room_seq.begin(), room_seq.end());
+    all_surf_path = voxelAstar(start_surf, goal_surf, -1, &total_expanded, &corridor);
+    // If corridor search fails (rare: room sequence too narrow), fall back to unrestricted
+    if (all_surf_path.empty()) {
+      all_surf_path = voxelAstar(start_surf, goal_surf, -1, &total_expanded);
     }
   }
 
@@ -645,6 +763,11 @@ HierarchicalPath HierarchicalPlanner::plan(
   result.voxel_planning_ms =
     std::chrono::duration<double, std::milli>(voxel_t1 - voxel_t0).count();
   result.voxel_nodes_expanded = total_expanded;
+
+  if (all_surf_path.empty()) {
+    result.message = "Corridor A* failed (even with unrestricted fallback).";
+    return result;
+  }
 
   // ── Convert surface-graph indices to world coordinates ────────────────────
   const auto & graph = vmap_->getSurfaceGraph();

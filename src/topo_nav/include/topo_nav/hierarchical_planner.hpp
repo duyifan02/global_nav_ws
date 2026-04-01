@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <memory>
 #include <tuple>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <string>
 
@@ -73,20 +75,36 @@ private:
 
   /// Step 2: A* on RoomGraph restricted to relevant floors + staircase rooms.
   /// Returns ordered room ids, empty on failure.
+  /// start_world / goal_world are used for admissible init-cost and heuristic.
   std::vector<int> roomAstar(
     int start_room,
     int goal_room,
+    const std::tuple<double, double, double> & start_world,
+    const std::tuple<double, double, double> & goal_world,
     const std::vector<int> & allowed_floors,
     float robot_diameter_m) const;
 
   /// Step 3: Voxel-level A* on surface graph.
-  /// If allowed_room_id >= 0, only nodes in that room are expanded
-  /// (start_surf and goal_surf are always accessible).
-  /// Returns ordered surface-graph indices, empty on failure.
+  /// Room filter (mutually exclusive, corridor takes priority):
+  ///   corridor != nullptr  → only voxels whose room_label ∈ *corridor
+  ///   allowed_room_id >= 0 → only voxels in that single room
+  ///   both null / -1       → unrestricted search
+  /// start_surf and goal_surf are always accessible regardless of filter.
   std::vector<int> voxelAstar(
     int start_surf,
     int goal_surf,
-    int allowed_room_id = -1) const;
+    int allowed_room_id = -1,
+    int* out_expanded   = nullptr,
+    const std::unordered_set<int>* corridor = nullptr) const;
+
+  /// Exhaustive single-source Dijkstra restricted to one room.
+  /// Populates out_dist[v] = shortest cost from source to v,
+  /// out_parent[v] = predecessor on that path, for all reachable v in room.
+  void roomDijkstra(
+    int source_surf,
+    int room_id,
+    std::unordered_map<int, double> & out_dist,
+    std::unordered_map<int, int>    & out_parent) const;
 
   /// Snap world coordinate to surface graph index.  Returns -1 on failure.
   int snapToSurface(
@@ -118,6 +136,21 @@ private:
   ///
   /// Space: R × E × 8 B ≈ 7 KB for R=18, E=50.
   std::vector<double> min_exit_cost_flat_;  ///< [room * E + edge_out], INF = no path
+
+  // ── Scheme 2: Transition distance fields (built by roomDijkstra) ──────────
+  //
+  // For each transition surface voxel t, stores the complete single-source
+  // shortest-path tree from t to all reachable voxels in t's room.
+  //
+  // Keyed by transition surf index (unique per room-side of an edge).
+  // Enables O(1) cost lookup and O(path) reconstruction at query time.
+  //
+  // Memory: per-transition ≈ room_voxels × 12 B; typical total ≈ 2–4 MB.
+  struct TransitionField {
+    std::unordered_map<int, double> dist;    ///< surf_idx → cost from transition
+    std::unordered_map<int, int>    parent;  ///< surf_idx → predecessor
+  };
+  std::unordered_map<int, TransitionField> trans_field_;  ///< key = transition surf_idx
 
   // ── Dirty-array A* state (space-for-time: eliminates per-call O(n) init) ──
   //
