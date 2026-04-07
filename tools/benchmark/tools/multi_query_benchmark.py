@@ -177,7 +177,7 @@ def main():
         persistence_tau=args.tau,
         robot_diameter_m=args.robot_diameter,
     )
-    if not node.wait_for_services():
+    if not node.wait_for_jps_services() or not node.wait_for_topo_services():
         print('ERROR: services not available')
         rclpy.shutdown()
         return
