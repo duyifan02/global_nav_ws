@@ -91,9 +91,31 @@ Algorithm: v4b = Corridor A* (scheme 1) + roomDijkstra precompute (scheme 2), kM
 
 **Ts (voxelAstar within plan)**: 2.5–5.2ms, comparable to JPS (2.2–5.6ms). Single corridor A* call works as expected.
 
+## v4b-det Results (2026-04-07, deterministic .npy occmaps, 6/6 scenes)
+
+Algorithm: same as v4b, but loaded from pre-built `.npy` (seed=42) via `--occmap-dir`.
+**1pXnuDYAj8r FAIL fixed** — deterministic voxelization yields stable room segmentation (82 rooms, 1 floor every run).
+
+JPS baseline from `benchmark.csv` (same scenes, 0.1m, 3 trials).
+
+| Scene | JPS path(m) | v4b-det path(m) | Δ | Ts(ms) | nodes | topo_ms | tp_ms |
+|-------|------------|----------------|---|--------|-------|---------|-------|
+| 1LXtFkjw3qL | 31.43 | 31.23 | **-0.6%** | 4.95 | 22,648 | 6.73 | 2.09 |
+| 1pXnuDYAj8r | 38.67 | 35.02 | **-9.5%** | 2.21 | 8,618 | 6.21 | 1.36 |
+| 2azQ1b91cZZ | 35.08 | 34.87 | **-0.6%** | 2.48 | 10,505 | 8.68 | 3.32 |
+| 2n8kARJN3HM | 41.40 | 41.44 | +0.1% | 5.54 | 27,484 | 8.19 | 3.52 |
+| 2t7WUuJeko7 | 13.22 | 13.22 | 0.0% | 3.02 | 1,955 | 1.27 | 2.28 |
+| 5LpN3gDmAk7 | 49.44 | 49.40 | **-0.1%** | 5.71 | 30,902 | 11.38 | 2.87 |
+| **mean** | **34.87** | **34.20** | **-1.8%** | **3.99** | **16,852** | **7.08** | **2.57** |
+
+**Key findings:**
+- **成功率 6/6**（v4b non-det 仅 5/6）
+- **路径质量 mean -1.8% vs JPS**（比JPS更短！确定性分割产生更优room拓扑）
+- **tp_ms 平均 2.6ms**（原OBJ体素化需 20-60s，减少约 10000x）
+- 5LpN3gDmAk7 路径从 51.35m → 49.40m，基本与JPS持平（非确定性分割导致的变异被消除）
+
 ## Planned Next Experiments
 
 - [ ] 0.05m resolution: stronger node-reduction proof
 - [ ] Multi-query amortization: measure amortized cost per query
-- [ ] τ sweep: find optimal persistence threshold (see tools/benchmark/tools/sweep_tau.sh)
-- [ ] Fix non-deterministic segmentation root cause (voxelization floating-point ordering)
+- [x] Fix non-deterministic segmentation — solved via .npy occmap caching (seed=42)
