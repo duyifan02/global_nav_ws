@@ -276,19 +276,25 @@ std::vector<int> HierarchicalPlanner::floorAstar(
 // State space: E × R ≤ 10 000 for typical indoor scenes.  Much smaller than
 // the voxel graph, so memory and runtime are negligible.
 // ─────────────────────────────────────────────────────────────────────────────
-std::vector<int> HierarchicalPlanner::roomAstar(
+HierarchicalPlanner::RoomRoute HierarchicalPlanner::roomAstar(
   int start_room,
   int goal_room,
+  int start_surf,
+  int goal_surf,
   const std::tuple<double, double, double> & start_world,
   const std::tuple<double, double, double> & goal_world,
   const std::vector<int> & allowed_floors,
   float /*robot_diameter_m*/) const
 {
-  if (start_room == goal_room) return {start_room};
+  RoomRoute route;
+  if (start_room == goal_room) {
+    route.rooms = {start_room};
+    return route;
+  }
 
   const int R = rg_.num_rooms;
   const int E = transfer_E_;
-  if (E == 0 || R == 0) return {};
+  if (E == 0 || R == 0) return route;
 
   const double INF = std::numeric_limits<double>::infinity();
 
@@ -297,6 +303,47 @@ std::vector<int> HierarchicalPlanner::roomAstar(
     if (r == start_room || r == goal_room) return true;
     if (rg_.rooms[r].type == RoomType::STAIRCASE) return true;
     return (bool)floor_set.count(rg_.rooms[r].floor_id);
+  };
+
+  // Helper: room-side transition surf for (room, edge) pair
+  auto roomSideTrans = [&](int room, int eidx) -> int {
+    const auto & e = rg_.edges[eidx];
+    return (e.room_i == room) ? e.transition_surf_i : e.transition_surf_j;
+  };
+
+  // Helper: exact geodesic cost from start_surf → room-side transition of edge,
+  // using precomputed trans_field_ when available.  Falls back to Euclidean.
+  // Note: trans_field is forward-Dijkstra from t, so dist[start_surf] is the
+  // cost FROM t TO start_surf.  For undirected edges this equals the desired
+  // start→t cost; the up/down asymmetry within a single room is negligible
+  // (z varies little inside a non-staircase room).
+  const auto [sx, sy, sz] = start_world;
+  const auto [gx_w, gy_w, gz_w] = goal_world;
+  auto exactStartCost = [&](int eidx) -> double {
+    const int t = roomSideTrans(start_room, eidx);
+    auto fit = trans_field_.find(t);
+    if (fit != trans_field_.end()) {
+      auto dit = fit->second.dist.find(start_surf);
+      if (dit != fit->second.dist.end()) return dit->second;
+    }
+    const auto & edge = rg_.edges[eidx];
+    const double dtx = edge.trans_wx - sx;
+    const double dty = edge.trans_wy - sy;
+    const double dtz = edge.trans_wz - sz;
+    return std::sqrt(dtx * dtx + dty * dty + dtz * dtz);
+  };
+  auto exactGoalCost = [&](int eidx) -> double {
+    const int t = roomSideTrans(goal_room, eidx);
+    auto fit = trans_field_.find(t);
+    if (fit != trans_field_.end()) {
+      auto dit = fit->second.dist.find(goal_surf);
+      if (dit != fit->second.dist.end()) return dit->second;
+    }
+    const auto & edge = rg_.edges[eidx];
+    const double dtx = edge.trans_wx - gx_w;
+    const double dty = edge.trans_wy - gy_w;
+    const double dtz = edge.trans_wz - gz_w;
+    return std::sqrt(dtx * dtx + dty * dty + dtz * dtz);
   };
 
   // State: entry_edge_idx * R + room_id  (came_from value -1 = virtual start)
@@ -309,39 +356,36 @@ std::vector<int> HierarchicalPlanner::roomAstar(
   std::priority_queue<QElem, std::vector<QElem>, std::greater<QElem>> open;
 
   // Heuristic: Euclidean from edge transition to the actual goal world position.
-  // This is admissible: straight-line distance ≤ any realizable path length.
-  // Using goal_world (not goal_room centroid) prevents inadmissibility when
-  // goal_surf is closer to the current transition than the centroid is.
-  const auto [gx, gy, gz] = goal_world;
   auto h = [&](int ei) -> double {
     const auto & edge = rg_.edges[ei];
-    const double dx = edge.trans_wx - gx;
-    const double dy = edge.trans_wy - gy;
-    const double dz = edge.trans_wz - gz;
+    const double dx = edge.trans_wx - gx_w;
+    const double dy = edge.trans_wy - gy_w;
+    const double dz = edge.trans_wz - gz_w;
     return std::sqrt(dx * dx + dy * dy + dz * dz);
   };
 
   // ── Initialise: from start_room push all its exit edges ──────────────────
-  // Cost = Euclidean from actual start_world to each transition.
-  // Using start_world (not room centroid) gives a tighter cost estimate for
-  // the start-room traversal.
-  const auto [sx, sy, sz] = start_world;
+  // Cost = exact geodesic from start_surf to room-side transition (when
+  // trans_field is available), else Euclidean.
   const auto adj_start = rg_.adjacency.find(start_room);
-  if (adj_start == rg_.adjacency.end()) return {};
+  if (adj_start == rg_.adjacency.end()) return route;
 
   for (auto & [nbr, eidx] : adj_start->second) {
     if (!room_allowed(nbr)) continue;
-    const auto & edge = rg_.edges[eidx];
-    const double dtx = edge.trans_wx - sx;
-    const double dty = edge.trans_wy - sy;
-    const double dtz = edge.trans_wz - sz;
-    const double init_cost = std::sqrt(dtx * dtx + dty * dty + dtz * dtz);
+    const double init_cost = exactStartCost(eidx);
+
+    // Goal-room shortcut: if neighbour IS goal_room, add the exact end cost too.
+    double admit = init_cost;
+    if (nbr == goal_room) admit += exactGoalCost(eidx);
 
     const int state = eidx * R + nbr;
-    if (init_cost < g[state]) {
-      g[state]          = init_cost;
+    if (admit < g[state]) {
+      g[state]          = admit;
       came_from[state]  = -1;  // came from virtual start
-      open.emplace(init_cost + h(eidx), state);
+      // For non-goal we use Euclidean h; for goal we use 0 (we already added
+      // exact remaining cost).
+      const double f = (nbr == goal_room) ? admit : (admit + h(eidx));
+      open.emplace(f, state);
     }
   }
 
@@ -356,28 +400,31 @@ std::vector<int> HierarchicalPlanner::roomAstar(
 
     // Goal check
     if (cur_room == goal_room) {
-      // Reconstruct room sequence by following came_from chain
-      std::vector<int> room_path;
+      // Reconstruct (room_seq, edge_seq) by following came_from chain.
+      // State (entry_ei, room) means "in room, entered via entry_ei".
+      // Walk back: collect rooms; the edge BETWEEN room_seq[i] and room_seq[i+1]
+      // is the entry_ei of room_seq[i+1].
+      std::vector<int> rooms_rev;
+      std::vector<int> edges_rev;  // edges_rev[i] is the entry_ei of rooms_rev[i]
       int s = cur_state;
-      while (s >= 0) {          // -1 = virtual start sentinel → stop
-        room_path.push_back(s % R);
+      while (s >= 0) {
+        rooms_rev.push_back(s % R);
+        edges_rev.push_back(s / R);
         s = came_from[s];
       }
-      room_path.push_back(start_room);
-      std::reverse(room_path.begin(), room_path.end());
+      rooms_rev.push_back(start_room);
+      // Note: edges_rev is one shorter than rooms_rev once we add start_room.
+      // edges_rev[i] = entry edge of rooms_rev[i] for i in [0, rooms_rev.size()-2]
 
-      // Debug: print room sequence with voxel counts
-      fprintf(stderr, "[roomAstar] seq(%zu rooms): ", room_path.size());
-      const auto & graph_ra = vmap_->getSurfaceGraph();
-      for (int ri : room_path) {
-        int cnt = 0;
-        for (int vi = 0; vi < static_cast<int>(graph_ra.size()); ++vi)
-          if (rg_.room_labels[vi] == ri) ++cnt;
-        fprintf(stderr, "%d(%dvx) ", ri, cnt);
-      }
+      route.rooms.assign(rooms_rev.rbegin(), rooms_rev.rend());
+      route.edges.assign(edges_rev.rbegin(), edges_rev.rend());
+      // route.edges[i] is the edge between rooms[i] and rooms[i+1].
+
+      fprintf(stderr, "[roomAstar] seq(%zu rooms, %zu edges): ",
+              route.rooms.size(), route.edges.size());
+      for (int ri : route.rooms) fprintf(stderr, "%d ", ri);
       fprintf(stderr, "\n");
-
-      return room_path;
+      return route;
     }
 
     // ── Expand: traverse cur_room from entry_ei to each exit edge ────────
@@ -389,8 +436,6 @@ std::vector<int> HierarchicalPlanner::roomAstar(
       if (!room_allowed(nbr)) continue;
 
       // Exact precomputed transfer cost: entry_ei → ejdx through cur_room.
-      // Both edges are incident to cur_room, so this slot was filled during
-      // precomputeTransfers().  Falls back to Euclidean if unavailable.
       double within_cost = transfer_cost_[entry_ei * E + ejdx];
       if (within_cost >= INF) {
         const auto & e_in  = rg_.edges[entry_ei];
@@ -401,16 +446,20 @@ std::vector<int> HierarchicalPlanner::roomAstar(
         within_cost = std::sqrt(dx * dx + dy * dy + dz * dz);
       }
 
-      const double new_g     = g[cur_state] + within_cost;
-      const int    next_state = ejdx * R + nbr;
+      double new_g = g[cur_state] + within_cost;
+      // Goal-room admission: add exact transition→goal_surf cost.
+      if (nbr == goal_room) new_g += exactGoalCost(ejdx);
+
+      const int next_state = ejdx * R + nbr;
       if (new_g < g[next_state]) {
         g[next_state]         = new_g;
         came_from[next_state] = cur_state;
-        open.emplace(new_g + h(ejdx), next_state);
+        const double f = (nbr == goal_room) ? new_g : (new_g + h(ejdx));
+        open.emplace(f, next_state);
       }
     }
   }
-  return {};
+  return route;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -635,6 +684,133 @@ void HierarchicalPlanner::roomDijkstra(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Step 3 (new): assemble the surface path from PRECOMPUTED segments.
+//
+// This is the heart of the stitched-geodesic planner.  No voxel-level search
+// runs at query time — every segment is reconstructed by chasing parent
+// pointers in trans_field_ (start/goal rooms) or by direct lookup in
+// transfer_path_ (intermediate rooms).
+//
+// Failure modes (return empty so the caller can fall back to corridor A*):
+//   • A required trans_field_ entry is missing (room had > kMaxEdgesForDijkstra
+//     edges, so precompute was skipped).
+//   • start_surf or goal_surf is not reachable from the chosen transition
+//     within its room (e.g. isolated component in the surface graph).
+//   • Any intermediate transfer_path_ slot is empty.
+// ─────────────────────────────────────────────────────────────────────────────
+std::vector<int> HierarchicalPlanner::stitchPath(
+  int start_surf, int goal_surf, const RoomRoute & route) const
+{
+  // Caller handles single-room queries (no edges to stitch).
+  if (route.rooms.size() < 2 || route.edges.empty()) return {};
+  if (route.edges.size() != route.rooms.size() - 1) return {};
+
+  const int E = transfer_E_;
+
+  auto roomSideTrans = [&](int room, int eidx) -> int {
+    const auto & e = rg_.edges[eidx];
+    return (e.room_i == room) ? e.transition_surf_i : e.transition_surf_j;
+  };
+
+  auto append = [](std::vector<int> & dst, const std::vector<int> & src) {
+    if (src.empty()) return;
+    if (!dst.empty() && dst.back() == src.front())
+      dst.insert(dst.end(), src.begin() + 1, src.end());
+    else
+      dst.insert(dst.end(), src.begin(), src.end());
+  };
+
+  std::vector<int> path;
+  path.reserve(256);
+
+  // ── Segment 0: start_room → first transition ────────────────────────────
+  // trans_field_[t] is forward Dijkstra from t in t's room, so parent[v]
+  // points one step CLOSER to t.  Walking parent chain from start_surf yields
+  // [start_surf, ..., t].
+  {
+    const int e0     = route.edges[0];
+    const int t_exit = roomSideTrans(route.rooms[0], e0);
+    auto fit = trans_field_.find(t_exit);
+    if (fit == trans_field_.end()) return {};
+    const auto & field = fit->second;
+    if (!field.dist.count(start_surf)) return {};
+
+    std::vector<int> seg;
+    int cur = start_surf;
+    int guard = 0;
+    while (cur >= 0) {
+      seg.push_back(cur);
+      if (cur == t_exit) break;
+      auto pit = field.parent.find(cur);
+      if (pit == field.parent.end()) return {};
+      cur = pit->second;
+      if (++guard > 100000) return {};   // sanity
+    }
+    if (seg.empty() || seg.back() != t_exit) return {};
+    append(path, seg);
+  }
+
+  // ── Intermediate segments: transfer_path_ lookups ───────────────────────
+  // For room route.rooms[i] (1 ≤ i ≤ N-2), entry edge = route.edges[i-1],
+  // exit edge = route.edges[i].
+  for (size_t i = 1; i + 1 < route.rooms.size(); ++i) {
+    const int r       = route.rooms[i];
+    const int e_in    = route.edges[i - 1];
+    const int e_out   = route.edges[i];
+    const int t_enter = roomSideTrans(r, e_in);    // where we land after crossing e_in
+    const int t_exit  = roomSideTrans(r, e_out);   // where we leave via e_out
+
+    // Bridge across edge: previous segment ended at the OTHER side of e_in;
+    // append t_enter (which is the room-r side).
+    if (path.empty() || path.back() != t_enter) path.push_back(t_enter);
+
+    if (t_enter == t_exit) continue;  // degenerate: same boundary voxel
+
+    // transfer_path_[ei * E + ej] is the geodesic in r from
+    // roomSide(r, ei) to roomSide(r, ej).
+    const auto & seg = transfer_path_[e_in * E + e_out];
+    if (seg.empty()) return {};   // missing precompute → fall back
+    append(path, seg);
+  }
+
+  // ── Goal segment: last transition → goal_surf ───────────────────────────
+  {
+    const int e_last  = route.edges.back();
+    const int goal_room = route.rooms.back();
+    const int t_enter = roomSideTrans(goal_room, e_last);
+
+    // Bridge across the final edge.
+    if (path.empty() || path.back() != t_enter) path.push_back(t_enter);
+
+    if (t_enter == goal_surf) return path;
+
+    auto fit = trans_field_.find(t_enter);
+    if (fit == trans_field_.end()) return {};
+    const auto & field = fit->second;
+    if (!field.dist.count(goal_surf)) return {};
+
+    // Walk parent chain from goal_surf back to t_enter, then reverse to
+    // get [t_enter, ..., goal_surf].
+    std::vector<int> seg;
+    int cur = goal_surf;
+    int guard = 0;
+    while (cur >= 0) {
+      seg.push_back(cur);
+      if (cur == t_enter) break;
+      auto pit = field.parent.find(cur);
+      if (pit == field.parent.end()) return {};
+      cur = pit->second;
+      if (++guard > 100000) return {};
+    }
+    if (seg.empty() || seg.back() != t_enter) return {};
+    std::reverse(seg.begin(), seg.end());
+    append(path, seg);
+  }
+
+  return path;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Main entry: three-level hierarchical planning
 // ─────────────────────────────────────────────────────────────────────────────
 HierarchicalPath HierarchicalPlanner::plan(
@@ -686,8 +862,10 @@ HierarchicalPath HierarchicalPlanner::plan(
 
   // ── Step 2: Room-level routing ────────────────────────────────────────────
   auto room_t0 = std::chrono::steady_clock::now();
-  const std::vector<int> room_seq =
-    roomAstar(start_room, goal_room, start_world, goal_world, floor_seq, robot_diameter_m);
+  const RoomRoute route = roomAstar(
+    start_room, goal_room, start_surf, goal_surf,
+    start_world, goal_world, floor_seq, robot_diameter_m);
+  const std::vector<int> & room_seq = route.rooms;
   auto room_t1 = std::chrono::steady_clock::now();
   result.room_planning_ms =
     std::chrono::duration<double, std::milli>(room_t1 - room_t0).count();
@@ -733,40 +911,50 @@ HierarchicalPath HierarchicalPlanner::plan(
   }
   result.room_sequence = room_seq;
 
-  // ── Step 3: Corridor A* (Scheme 1) ─────────────────────────────────────────
+  // ── Step 3: Stitched-geodesic reconstruction ─────────────────────────────
   //
-  // Instead of running separate voxelAstar calls per room and stitching
-  // segments together, we run a SINGLE A* from start to goal with the
-  // room sequence as a corridor constraint.  Benefits:
-  //   - One priority queue construction (eliminates per-room fixed overhead)
-  //   - No path stitching artifacts at room boundaries
-  //   - Natural cross-room shortcuts within the corridor
-  //   - Code simplification: ~120 lines → ~15 lines
+  // First-principles improvement: precomputeTransfers() already built the
+  // complete shortest-path forest within every room.  Reuse it!  Online cost
+  // for multi-room queries collapses from a corridor A* (~17k expansions) to
+  // a handful of parent-chain walks plus table lookups.  See stitchPath()
+  // for details.  Falls back to corridor A* whenever stitching is unavailable
+  // (single-room query, or a room with > kMaxEdgesForDijkstra incident edges
+  // whose trans_field_ was skipped during precompute).
   auto voxel_t0 = std::chrono::steady_clock::now();
   int total_expanded = 0;
   std::vector<int> all_surf_path;
+  bool used_stitch = false;
 
-  if (room_seq.size() <= 1) {
-    // Single room or empty: unrestricted search (allows cross-room shortcuts)
-    all_surf_path = voxelAstar(start_surf, goal_surf, -1, &total_expanded);
-  } else {
-    // Multi-room: build corridor from room sequence, single A* within it
-    std::unordered_set<int> corridor(room_seq.begin(), room_seq.end());
-    all_surf_path = voxelAstar(start_surf, goal_surf, -1, &total_expanded, &corridor);
-    // If corridor search fails (rare: room sequence too narrow), fall back to unrestricted
-    if (all_surf_path.empty()) {
+  if (room_seq.size() >= 2) {
+    all_surf_path = stitchPath(start_surf, goal_surf, route);
+    if (!all_surf_path.empty()) used_stitch = true;
+  }
+
+  if (all_surf_path.empty()) {
+    // Fallback: original corridor A* (also handles single-room case).
+    if (room_seq.size() <= 1) {
       all_surf_path = voxelAstar(start_surf, goal_surf, -1, &total_expanded);
+    } else {
+      std::unordered_set<int> corridor(room_seq.begin(), room_seq.end());
+      all_surf_path = voxelAstar(start_surf, goal_surf, -1, &total_expanded, &corridor);
+      if (all_surf_path.empty()) {
+        all_surf_path = voxelAstar(start_surf, goal_surf, -1, &total_expanded);
+      }
     }
   }
 
   auto voxel_t1 = std::chrono::steady_clock::now();
   result.voxel_planning_ms =
     std::chrono::duration<double, std::milli>(voxel_t1 - voxel_t0).count();
-  result.voxel_nodes_expanded = total_expanded;
+  result.voxel_nodes_expanded = total_expanded;  // 0 when stitch path was used
 
   if (all_surf_path.empty()) {
-    result.message = "Corridor A* failed (even with unrestricted fallback).";
+    result.message = "Step 3 failed (stitch + corridor A* both empty).";
     return result;
+  }
+  if (used_stitch) {
+    fprintf(stderr, "[stitch] reused %zu voxels from precomputed segments\n",
+            all_surf_path.size());
   }
 
   // ── Convert surface-graph indices to world coordinates ────────────────────

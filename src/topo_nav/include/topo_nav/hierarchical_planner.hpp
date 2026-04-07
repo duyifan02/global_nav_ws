@@ -73,16 +73,39 @@ private:
   /// Step 1: A* on FloorGraph.  Returns ordered floor ids, empty on failure.
   std::vector<int> floorAstar(int start_floor, int goal_floor) const;
 
+  /// Result of room-level routing.
+  struct RoomRoute {
+    std::vector<int> rooms;          ///< Ordered room ids (size = N+1, including start/goal)
+    std::vector<int> edges;          ///< Ordered edge ids between consecutive rooms (size = N)
+  };
+
   /// Step 2: A* on RoomGraph restricted to relevant floors + staircase rooms.
-  /// Returns ordered room ids, empty on failure.
-  /// start_world / goal_world are used for admissible init-cost and heuristic.
-  std::vector<int> roomAstar(
+  /// Returns ordered (rooms, edges); rooms.empty() on failure.
+  ///
+  /// start_surf / goal_surf are used to query precomputed trans_field_ for
+  /// EXACT geodesic init/admission costs (when available).  This makes the
+  /// chosen room sequence HPA*-optimal w.r.t. the precomputed transitions
+  /// rather than relying on a loose Euclidean lower bound.
+  RoomRoute roomAstar(
     int start_room,
     int goal_room,
+    int start_surf,
+    int goal_surf,
     const std::tuple<double, double, double> & start_world,
     const std::tuple<double, double, double> & goal_world,
     const std::vector<int> & allowed_floors,
     float robot_diameter_m) const;
+
+  /// Step 3 (new): assemble surface path from precomputed segments.
+  ///
+  /// For each room in room_seq, looks up trans_field_ / transfer_path_ to
+  /// reconstruct the geodesic path through that room.  Online cost is O(path
+  /// length) — no voxel search.  Returns empty on failure (caller should
+  /// fall back to corridor A*).
+  std::vector<int> stitchPath(
+    int start_surf,
+    int goal_surf,
+    const RoomRoute & route) const;
 
   /// Step 3: Voxel-level A* on surface graph.
   /// Room filter (mutually exclusive, corridor takes priority):
