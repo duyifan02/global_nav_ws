@@ -105,42 +105,44 @@ def _row_needs_run(row: dict, force: bool, planner_filter: Optional[str]) -> boo
     return _parse_float(row.get('planning_time_ms')) is None
 
 
-def _load_voxels_from_obj(obj_path: str, resolution: float,
-                           obj_origin: List[float], logger) -> Tuple[np.ndarray, list, float]:
-    """Return (voxel_centers, occupied_list, preprocessing_ms)."""
+def _ensure_voxel_io():
     workspace_root = Path(__file__).resolve().parents[3]
     occmap_pkg = workspace_root / 'src' / 'occmap_tools'
     if str(occmap_pkg) not in sys.path:
         sys.path.insert(0, str(occmap_pkg))
-
-    from occmap_tools.obj_mesh_loader import load_obj_mesh, voxelize_mesh
-
-    t0 = time.time()
-    vertices, faces = load_obj_mesh(obj_path)
-    if vertices.size == 0 or faces.size == 0:
-        raise RuntimeError(f'OBJ 无有效几何数据: {obj_path}')
-
-    voxel_centers = voxelize_mesh(vertices, faces, resolution,
-                                   tuple(obj_origin), logger=logger)
-    t1 = time.time()
-
-    if voxel_centers.size == 0:
-        raise RuntimeError(f'OBJ 体素化结果为空: {obj_path}')
-
-    occupied_list = [tuple(v) for v in voxel_centers]
-    return voxel_centers, occupied_list, (t1 - t0) * 1000.0
+    from occmap_tools import voxel_io
+    return voxel_io
 
 
-def _load_voxels_from_pcd(scene_name: str, resolution: float) -> Tuple[np.ndarray, list, float]:
+def _load_scene(row: dict, occmap_dir: Optional[str],
+                logger=None) -> Tuple[np.ndarray, float]:
+    """Load scene voxels for one CSV row. Returns (voxel_centers, tp_ms)."""
+    vio = _ensure_voxel_io()
+    obj_path = row.get('obj_path', '').strip()
+    scene = row.get('scene', 'unknown')
+    resolution = float(row.get('resolution', 0.1))
+
+    npy_path = vio.find_npy_for_scan(obj_path, resolution, occmap_dir) if obj_path else None
+    if npy_path:
+        t0 = time.time()
+        pts = vio.load_npy(npy_path)
+        tp_ms = (time.time() - t0) * 1000.0
+        if logger:
+            logger.info(f'Loaded {len(pts)} voxels from {npy_path} in {tp_ms:.1f}ms')
+        return pts, tp_ms
+
+    if obj_path and obj_path.lower() != 'none':
+        pts, tp_ms = vio.load_voxels(obj_path, resolution, logger=logger)
+        return pts, tp_ms
+
+    # PCD fallback
     benchmark_root = Path(__file__).resolve().parent.parent
     if str(benchmark_root) not in sys.path:
         sys.path.insert(0, str(benchmark_root))
     from converters.pcd_to_voxel import get_voxel_map
-
     t0 = time.time()
-    vmap = get_voxel_map(scene_name, resolution)
-    t1 = time.time()
-    return vmap.voxel_centers, vmap.occupied_list, (t1 - t0) * 1000.0
+    vmap = get_voxel_map(scene, resolution)
+    return vmap.voxel_centers, (time.time() - t0) * 1000.0
 
 
 # ── ROS2 Node ──────────────────────────────────────────────────────────────────
@@ -245,7 +247,7 @@ class AutoBenchmarkNode(Node):
 
     # ── Map loading ────────────────────────────────────────────────────────────
 
-    def set_voxel_map(self, occupied_list: list, seed: np.ndarray,
+    def set_voxel_map(self, voxel_centers: np.ndarray, seed: np.ndarray,
                       resolution: float) -> Tuple[bool, float, int, float]:
         """发送体素地图到规划器节点。
         Returns: (success, traversability_ms, surface_count, memory_bytes)
@@ -255,12 +257,12 @@ class AutoBenchmarkNode(Node):
         request.seed_point.x = float(seed[0])
         request.seed_point.y = float(seed[1])
         request.seed_point.z = float(seed[2])
-        for v in occupied_list:
+        for v in voxel_centers:
             p = Point()
             p.x, p.y, p.z = float(v[0]), float(v[1]), float(v[2])
             request.occupied.append(p)
 
-        print(f'  [MAP] 发送 {len(occupied_list)} 个体素 + seed {seed.tolist()} ...')
+        print(f'  [MAP] 发送 {len(voxel_centers)} 个体素 + seed {seed.tolist()} ...')
         response = self._call_service(
             self.set_map_client, request, 'set_voxel_map',
             timeout_sec=self.map_load_timeout_sec)
@@ -384,13 +386,13 @@ class AutoBenchmarkNode(Node):
 
     # ── High-level per-row runner ──────────────────────────────────────────────
 
-    def run_jps_row(self, row: dict, occupied_list: list, voxel_centers: np.ndarray,
+    def run_jps_row(self, row: dict, voxel_centers: np.ndarray,
                     tp_ms: float, num_trials: int) -> dict:
         seed = np.array([float(row['seed_x']), float(row['seed_y']), float(row['seed_z'])])
         start = np.array([float(row['start_x']), float(row['start_y']), float(row['start_z'])])
         goal = np.array([float(row['goal_x']), float(row['goal_y']), float(row['goal_z'])])
 
-        ok, te_ms, _, mem = self.set_voxel_map(occupied_list, seed, float(row['resolution']))
+        ok, te_ms, _, mem = self.set_voxel_map(voxel_centers, seed, float(row['resolution']))
         if not ok:
             return _failed_result(tp_ms=tp_ms)
 
@@ -425,7 +427,7 @@ class AutoBenchmarkNode(Node):
             'trials_count': len(ts_list),
         }
 
-    def run_topo_row(self, row: dict, occupied_list: list, voxel_centers: np.ndarray,
+    def run_topo_row(self, row: dict, voxel_centers: np.ndarray,
                      tp_ms: float, topo_ms: float, te_ms: float, mem: int,
                      num_trials: int) -> dict:
         start = np.array([float(row['start_x']), float(row['start_y']), float(row['start_z'])])
@@ -541,6 +543,10 @@ def main():
     parser.add_argument('--clearance', type=float, default=1.6)
     parser.add_argument('--dist-max', type=int, default=10)
 
+    parser.add_argument('--occmap-dir', type=str, default=None,
+                        help='Pre-built occmap dir (from convert_all_meshes.py). '
+                             'If set, loads .npy instead of real-time OBJ voxelization — '
+                             'deterministic & fast.')
     parser.add_argument('--service-timeout', type=float, default=10.0)
     parser.add_argument('--map-load-timeout', type=float, default=120.0)
 
@@ -613,56 +619,48 @@ def main():
         # Build a lookup dict: row index → result
         results_by_idx: Dict[int, dict] = {}
 
+        # Scene cache: shared between JPS and TopoNav passes to avoid double I/O
+        scene_cache: Dict[str, Tuple[np.ndarray, float]] = {}
+
+        def get_scene(row: dict) -> Tuple[Optional[np.ndarray], float]:
+            sk = _scene_key(row)
+            if sk not in scene_cache:
+                scene = row.get('scene', 'unknown')
+                resolution = float(row.get('resolution', 0.1))
+                print(f'\n[SCENE] 加载场景: scene={scene}, res={resolution}m')
+                try:
+                    pts, tp = _load_scene(row, args.occmap_dir, node.get_logger())
+                    print(f'  [SCENE] {len(pts)} 体素, Tp={tp:.1f}ms')
+                    scene_cache[sk] = (pts, tp)
+                except Exception as exc:
+                    print(f'  [SCENE] 加载失败: {exc}')
+                    scene_cache[sk] = (None, 0.0)
+            return scene_cache[sk]
+
         # Process JPS_3D rows grouped by scene
         jps_rows = [(i, r) for i, r in enumerate(to_run_sorted)
                     if r['planner'].strip() == 'JPS_3D']
 
-        prev_scene_key = None
-        occupied_list, voxel_centers, tp_ms = None, None, 0.0
-
         for orig_idx, row in jps_rows:
-            sk = _scene_key(row)
-            if sk != prev_scene_key:
-                # Load new scene
-                obj_path = row.get('obj_path', '').strip()
-                scene = row.get('scene', 'unknown')
-                resolution = float(row.get('resolution', 0.1))
-                print(f'\n[SCENE] 加载场景: scene={scene}, res={resolution}m, '
-                      f'obj={obj_path or "PCD"}')
-                try:
-                    if obj_path and obj_path.lower() != 'none':
-                        voxel_centers, occupied_list, tp_ms = _load_voxels_from_obj(
-                            obj_path, resolution, [0.0, 0.0, 0.0], node.get_logger())
-                    else:
-                        voxel_centers, occupied_list, tp_ms = _load_voxels_from_pcd(
-                            scene, resolution)
-                    print(f'  [SCENE] {len(occupied_list)} 体素, Tp={tp_ms:.1f}ms')
-                except Exception as exc:
-                    print(f'  [SCENE] 加载失败: {exc}')
-                    occupied_list, voxel_centers, tp_ms = None, None, 0.0
-                prev_scene_key = sk
-
-            if occupied_list is None:
+            voxel_centers, tp_ms = get_scene(row)
+            if voxel_centers is None:
                 results_by_idx[id(row)] = _failed_result()
                 continue
 
-            seed = np.array([float(row['seed_x']), float(row['seed_y']),
-                             float(row['seed_z'])])
             start = np.array([float(row['start_x']), float(row['start_y']),
                               float(row['start_z'])])
             goal = np.array([float(row['goal_x']), float(row['goal_y']),
                              float(row['goal_z'])])
-
             print(f'\n[JPS] scene={row["scene"]} | '
                   f'start={start.tolist()} → goal={goal.tolist()}')
-            result = node.run_jps_row(row, occupied_list, voxel_centers,
-                                      tp_ms, args.trials)
+            result = node.run_jps_row(row, voxel_centers, tp_ms, args.trials)
             results_by_idx[id(row)] = result
 
         # Process TopoNav rows grouped by (scene, seed)
         topo_rows = [(i, r) for i, r in enumerate(to_run_sorted)
                      if r['planner'].strip() == 'TopoNav']
 
+        prev_scene_key = None
         prev_seed_key = None
         topo_ms, te_ms, topo_mem = 0.0, 0.0, 0
 
@@ -670,36 +668,20 @@ def main():
             sk = _scene_key(row)
             seed_k = _seed_key(row)
 
-            if sk != prev_scene_key:
-                obj_path = row.get('obj_path', '').strip()
-                scene = row.get('scene', 'unknown')
-                resolution = float(row.get('resolution', 0.1))
-                print(f'\n[SCENE] 加载场景: scene={scene}, res={resolution}m, '
-                      f'obj={obj_path or "PCD"}')
-                try:
-                    if obj_path and obj_path.lower() != 'none':
-                        voxel_centers, occupied_list, tp_ms = _load_voxels_from_obj(
-                            obj_path, resolution, [0.0, 0.0, 0.0], node.get_logger())
-                    else:
-                        voxel_centers, occupied_list, tp_ms = _load_voxels_from_pcd(
-                            scene, resolution)
-                    print(f'  [SCENE] {len(occupied_list)} 体素, Tp={tp_ms:.1f}ms')
-                except Exception as exc:
-                    print(f'  [SCENE] 加载失败: {exc}')
-                    occupied_list, voxel_centers, tp_ms = None, None, 0.0
-                prev_scene_key = sk
-                prev_seed_key = None  # force re-build topo
-
-            if occupied_list is None:
+            voxel_centers, tp_ms = get_scene(row)
+            if voxel_centers is None:
                 results_by_idx[id(row)] = _failed_result()
                 continue
 
+            if sk != prev_scene_key:
+                prev_seed_key = None  # new scene → force re-upload
+                prev_scene_key = sk
+
             if seed_k != prev_seed_key:
-                # set_voxel_map + build_topo_map
                 seed = np.array([float(row['seed_x']), float(row['seed_y']),
                                  float(row['seed_z'])])
                 ok, te_ms, _, topo_mem = node.set_voxel_map(
-                    occupied_list, seed, float(row['resolution']))
+                    voxel_centers, seed, float(row['resolution']))
                 if not ok:
                     results_by_idx[id(row)] = _failed_result(tp_ms=tp_ms)
                     continue
@@ -717,8 +699,7 @@ def main():
             print(f'\n[TOPO] scene={row["scene"]} | '
                   f'start={start.tolist()} → goal={goal.tolist()}')
             result = node.run_topo_row(
-                row, occupied_list, voxel_centers,
-                tp_ms, topo_ms, te_ms, topo_mem, args.trials)
+                row, voxel_centers, tp_ms, topo_ms, te_ms, topo_mem, args.trials)
             results_by_idx[id(row)] = result
 
         # ── Merge results back into all rows ──────────────────────────────────

@@ -379,62 +379,37 @@ class RVizBenchmarkNode(Node):
         """加载OBJ网格并体素化（本地处理），后续通过 set_voxel_map 服务发送。"""
         obj_file = Path(self.obj_path).expanduser().resolve()
         if not obj_file.exists():
-            raise RuntimeError(f'OBJ文件不存在: {obj_file}')
+            raise RuntimeError(f'文件不存在: {obj_file}')
 
         workspace_root = Path(__file__).resolve().parents[3]
-        occmap_pkg_root = workspace_root / 'src' / 'occmap_tools'
-        if str(occmap_pkg_root) not in sys.path:
-            sys.path.insert(0, str(occmap_pkg_root))
-
-        try:
-            from occmap_tools.obj_mesh_loader import load_obj_mesh, voxelize_mesh
-        except Exception as exc:
-            raise RuntimeError(f'导入OBJ体素化工具失败: {exc}')
+        occmap_pkg = workspace_root / 'src' / 'occmap_tools'
+        if str(occmap_pkg) not in sys.path:
+            sys.path.insert(0, str(occmap_pkg))
+        from occmap_tools.voxel_io import load_voxels
 
         origin = tuple(float(v) for v in self.obj_origin)
-        t0 = time.time()
-        vertices, faces = load_obj_mesh(str(obj_file))
-        if vertices.size == 0 or faces.size == 0:
-            raise RuntimeError('OBJ文件无有效几何数据')
-
-        if self.obj_auto_center:
-            mesh_center = vertices.mean(axis=0)
-            origin = tuple((-mesh_center).tolist())
-
-        voxel_centers = voxelize_mesh(
-            vertices,
-            faces,
-            self.resolution,
-            origin,
-            logger=self.get_logger(),
-        )
+        voxel_centers, elapsed_ms = load_voxels(
+            str(obj_file), self.resolution, origin,
+            auto_center=self.obj_auto_center, logger=self.get_logger())
+        t0 = time.time() - elapsed_ms / 1000.0
         t1 = time.time()
 
         if voxel_centers.size == 0:
-            raise RuntimeError('OBJ体素化结果为空')
+            raise RuntimeError('体素化结果为空')
 
         self.voxel_centers = voxel_centers
-        self.occupied_list = [tuple(v) for v in voxel_centers]
-        self._preprocessing_time_ms = (t1 - t0) * 1000.0
+        self.occupied_list = voxel_centers  # ndarray rows support v[0]/v[1]/v[2] and len()
+        self._preprocessing_time_ms = elapsed_ms
 
         self.map_info = {
             'scene': self.scene_name,
             'resolution': self.resolution,
-            'source': 'obj_local_voxelization',
-            'obj_path': str(obj_file),
-            'origin': list(origin),
-            'auto_center': self.obj_auto_center,
-            'num_vertices': int(vertices.shape[0]),
-            'num_faces': int(faces.shape[0]),
+            'source': str(obj_file),
             'num_voxels': int(voxel_centers.shape[0]),
         }
 
-        print(f"[LOG] === 加载OBJ场景: {self.scene_name} ===")
-        print(f"[LOG] OBJ文件: {obj_file}")
-        print(f"[LOG] 顶点数: {vertices.shape[0]}, 面片数: {faces.shape[0]}")
-        print(f"[LOG] 体素化后体素数: {voxel_centers.shape[0]}")
-        print(f"[LOG] OBJ体素化耗时 (Tp): {self._preprocessing_time_ms:.2f}ms")
-        print(f"[LOG] 体素化origin: {origin}")
+        print(f"[LOG] 加载场景 {self.scene_name}: {voxel_centers.shape[0]} 体素, "
+              f"Tp={elapsed_ms:.1f}ms")
     
     def load_scene(self):
         import time as _time

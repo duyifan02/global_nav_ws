@@ -1,0 +1,7 @@
+planner,version,resolution,scene,planning_time_ms,planning_time_std_ms,path_length_m,ns_visited_nodes,te_ms,topo_ms,total_time_ms,trials_count,path_vs_jps_pct,notes
+TopoNav,v4b,0.1,1LXtFkjw3qL,4.873,0.076,31.47,22604,5.78,4.60,4.87,3,+0.1%,
+TopoNav,v4b,0.1,1pXnuDYAj8r,,,,,,,,0,FAIL,non-deterministic segmentation: 76 rooms 2 floors — roomAstar failed + voxelAstar fallback failed
+TopoNav,v4b,0.1,2azQ1b91cZZ,2.507,0.028,35.47,10673,6.32,9.99,2.51,3,+1.1%,
+TopoNav,v4b,0.1,2n8kARJN3HM,5.177,0.024,41.44,27986,7.47,23.51,5.18,3,+0.1%,
+TopoNav,v4b,0.1,2t7WUuJeko7,2.882,0.030,13.22,1958,1.39,1.59,2.88,3,+0.0%,
+TopoNav,v4b,0.1,5LpN3gDmAk7,4.695,0.035,51.35,22485,7.58,10.55,4.70,3,+3.9%,

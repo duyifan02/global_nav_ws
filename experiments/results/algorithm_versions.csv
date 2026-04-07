@@ -1,0 +1,4 @@
+version,date,roomAstar,heuristic,hpa_precompute,hpa_cap,single_room_fix,key_changes
+v1,2026-03-28,v1_room_id_state,Euclidean_to_centroid_inadmissible,yes,none,no,Initial implementation
+v2,2026-03-30,v2_entry_edge_state,Euclidean_to_goal_world_admissible,yes,none,no,Fix admissible heuristic; state=(entry_edge*R+room_id)
+v3,2026-04-01,v2_entry_edge_state,Euclidean_to_goal_world_admissible,yes,kMaxTransfers=90,yes,"Fix HPA* precompute bottleneck; unrestricted voxelAstar for single-room queries"

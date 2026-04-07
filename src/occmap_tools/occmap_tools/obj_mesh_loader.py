@@ -294,28 +294,13 @@ class ObjMeshLoader(Node):
 
         frame_id = self.get_parameter('frame_id').get_parameter_value().string_value
 
-        # Load OBJ mesh
-        self.get_logger().info(f'Loading OBJ mesh from: {obj_path}')
+        from occmap_tools.voxel_io import load_voxels
         try:
-            vertices, faces = load_obj_mesh(obj_path)
+            pts, _ = load_voxels(obj_path, resolution, origin,
+                                  auto_center=auto_center, logger=self.get_logger())
         except Exception as e:
-            self.get_logger().error(f'Failed to load OBJ file: {e}')
+            self.get_logger().error(f'Failed to load scene: {e}')
             return
-
-        if len(vertices) == 0 or len(faces) == 0:
-            self.get_logger().error('OBJ file contains no geometry')
-            return
-
-        self.get_logger().info(f'Loaded mesh: {len(vertices)} vertices, {len(faces)} faces')
-
-        # Auto-center if requested
-        if auto_center:
-            mesh_center = vertices.mean(axis=0)
-            origin = tuple(-mesh_center)
-            self.get_logger().info(f'Auto-centered mesh, new origin: {origin}')
-
-        # Voxelize mesh
-        pts = voxelize_mesh(vertices, faces, resolution, origin, self.get_logger())
         
         if len(pts) == 0:
             self.get_logger().error('Voxelization produced no occupied voxels')
