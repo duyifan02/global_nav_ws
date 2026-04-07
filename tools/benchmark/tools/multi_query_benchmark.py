@@ -21,6 +21,7 @@ Usage:
 import argparse
 import csv
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import List, Dict, Any
@@ -28,6 +29,7 @@ from typing import List, Dict, Any
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import MultiThreadedExecutor
 
 # Reuse node from auto_benchmark
 sys.path.insert(0, str(Path(__file__).parent))
@@ -177,6 +179,12 @@ def main():
         persistence_tau=args.tau,
         robot_diameter_m=args.robot_diameter,
     )
+    # Start executor in background thread (required for call_async to work)
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+    spin_thread = threading.Thread(target=executor.spin, daemon=True)
+    spin_thread.start()
+
     if not node.wait_for_jps_services() or not node.wait_for_topo_services():
         print('ERROR: services not available')
         rclpy.shutdown()
