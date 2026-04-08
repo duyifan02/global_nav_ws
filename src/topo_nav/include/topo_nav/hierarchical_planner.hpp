@@ -180,6 +180,19 @@ private:
   };
   std::unordered_map<int, TransitionField> trans_field_;  ///< key = transition surf_idx
 
+  // ── Room halo bitmap (1-hop dilation around each room) ───────────────────
+  //
+  // For each room r, room_halo_[r][v] == 1 iff voxel v is in room r OR is a
+  // 1-hop neighbour of some room-r voxel.  Needed because transition voxels
+  // can have room_label=r yet zero same-room neighbours (they sit on the
+  // saddle of the distance field, physically surrounded by room r').  Using
+  // the halo lets roomDijkstra bridge across the boundary at exactly 1 voxel
+  // of depth into the adjacent room, so the source transition can reach the
+  // interior of its own room.
+  //
+  // Memory: R × n × 1 B.  For R=30, n=50K → 1.5 MB.
+  std::vector<std::vector<uint8_t>> room_halo_;
+
   // ── Dirty-array A* state (space-for-time: eliminates per-call O(n) init) ──
   //
   // Instead of zeroing 3 × n-element arrays before every voxelAstar() call

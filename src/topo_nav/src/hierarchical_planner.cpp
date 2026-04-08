@@ -72,6 +72,35 @@ void HierarchicalPlanner::precomputeTransfers()
 
   trans_field_.clear();
 
+  // ── Build room halo (1-hop dilation) ─────────────────────────────────────
+  // See hpp for rationale: transition voxels may have zero same-room neighbours.
+  {
+    const auto & graph_halo = vmap_->getSurfaceGraph();
+    const auto & all_nbrs_halo = vmap_->getAllNeighbors();
+    const int n_surf = static_cast<int>(graph_halo.size());
+    room_halo_.assign(R, std::vector<uint8_t>(n_surf, 0));
+    for (int v = 0; v < n_surf; ++v) {
+      const int rv = rg_.room_labels[v];
+      if (rv < 0 || rv >= R) continue;
+      room_halo_[rv][v] = 1;
+      const auto & nd = graph_halo[v];
+      for (int ni = 0; ni < nd.neighbor_count; ++ni) {
+        const int nbr = all_nbrs_halo[nd.neighbor_start + ni];
+        if (nbr >= 0 && nbr < n_surf) room_halo_[rv][nbr] = 1;
+      }
+    }
+  }
+
+  // Precompute per-room voxel counts once (used for both budget cap + timing)
+  std::vector<int> room_voxel_count(R, 0);
+  {
+    const auto & graph_count = vmap_->getSurfaceGraph();
+    for (int vi = 0; vi < static_cast<int>(graph_count.size()); ++vi) {
+      const int rv = rg_.room_labels[vi];
+      if (rv >= 0 && rv < R) ++room_voxel_count[rv];
+    }
+  }
+
   for (int r = 0; r < R; ++r) {
     const auto adj_it = rg_.adjacency.find(r);
     if (adj_it == rg_.adjacency.end()) continue;
@@ -87,28 +116,22 @@ void HierarchicalPlanner::precomputeTransfers()
     }
     if (incident.size() < 2) continue;  // dead-end: no through-paths to precompute
 
-    // Guard against combinatorial explosion in highly-connected rooms.
-    // With Scheme 2 (Dijkstra), cost is K Dijkstra calls × room_voxels.
-    // Cap: skip rooms where K * room_voxels > threshold (≈ 10-edge room with
-    // typical size).  K=10 edges: 10*(10-1)=90 transfers — matches old v3 cap.
-    static constexpr size_t kMaxEdgesForDijkstra = 10;
-    if (incident.size() > kMaxEdgesForDijkstra) {
-      const auto & graph_skip = vmap_->getSurfaceGraph();
-      int skip_vx = 0;
-      for (int vi = 0; vi < static_cast<int>(graph_skip.size()); ++vi)
-        if (rg_.room_labels[vi] == r) ++skip_vx;
+    // Budget-based cap: skip rooms whose total work exceeds threshold.
+    // Work ≈ K Dijkstra calls × halo voxel count.  K=57 × 7636 = 435K still fits
+    // a 500K budget (~50 ms for one big room); truly huge rooms (> 500K) are
+    // still skipped to keep setTopoMap time bounded.
+    static constexpr size_t kPrecomputeBudget = 500000;
+    const int room_voxels = room_voxel_count[r];
+    const size_t work = incident.size() * static_cast<size_t>(room_voxels);
+    if (work > kPrecomputeBudget) {
       fprintf(stderr,
-        "[HPA*] room %3d: %4d voxels, %zu edges — skipping precompute "
-        "(> %zu edge cap); roomAstar will use Euclidean fallback\n",
-        r, skip_vx, incident.size(), kMaxEdgesForDijkstra);
+        "[HPA*] room %3d: %4d voxels, %zu edges, work=%zu — skipping "
+        "(> budget %zu); stitchPath will use lazy online Dijkstra or fallback\n",
+        r, room_voxels, incident.size(), work, kPrecomputeBudget);
       continue;
     }
 
     const auto r_t0 = std::chrono::steady_clock::now();
-    int room_voxels = 0;
-    const auto & graph_diag = vmap_->getSurfaceGraph();
-    for (int vi = 0; vi < static_cast<int>(graph_diag.size()); ++vi)
-      if (rg_.room_labels[vi] == r) ++room_voxels;
 
     // Scheme 2: k single-source Dijkstra replaces k*(k-1) pairwise A*.
     // Each Dijkstra gives distances from one transition to ALL room voxels,
@@ -655,8 +678,14 @@ void HierarchicalPlanner::roomDijkstra(
       const int nbr = all_nbrs[nd.neighbor_start + ni];
       if (astar_cl_gen_[nbr] == gen) continue;
 
-      // Room restriction (source itself is always accessible)
-      if (room_id >= 0 && rg_.room_labels[nbr] != room_id) continue;
+      // Room restriction via 1-hop halo.  Accepts any voxel that is either in
+      // room_id or one hop away.  This is critical for transition voxels that
+      // have zero same-room neighbours: without the halo, Dijkstra would get
+      // stuck at the source and the resulting trans_field_ would be useless.
+      if (room_id >= 0 &&
+          room_id < static_cast<int>(room_halo_.size()) &&
+          !room_halo_[room_id].empty() &&
+          !room_halo_[room_id][nbr]) continue;
 
       const double tentative_g = cur_g + edge_cost(cur, nbr);
       const double nbr_g = (astar_g_gen_[nbr] == gen)
