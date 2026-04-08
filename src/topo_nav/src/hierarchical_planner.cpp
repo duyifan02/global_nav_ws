@@ -684,23 +684,32 @@ void HierarchicalPlanner::roomDijkstra(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Step 3 (new): assemble the surface path from PRECOMPUTED segments.
+// Step 3 (new): assemble the surface path from precomputed segments.
 //
-// This is the heart of the stitched-geodesic planner.  No voxel-level search
-// runs at query time — every segment is reconstructed by chasing parent
-// pointers in trans_field_ (start/goal rooms) or by direct lookup in
-// transfer_path_ (intermediate rooms).
+// Strategy: prefer O(1) lookups, fall back gracefully per segment.
 //
-// Failure modes (return empty so the caller can fall back to corridor A*):
-//   • A required trans_field_ entry is missing (room had > kMaxEdgesForDijkstra
-//     edges, so precompute was skipped).
-//   • start_surf or goal_surf is not reachable from the chosen transition
-//     within its room (e.g. isolated component in the surface graph).
-//   • Any intermediate transfer_path_ slot is empty.
+//   Segment 0 (start_room → first transition):
+//     Try trans_field_[t_exit] parent-chain walk from start_surf.
+//     Fallback: voxelAstar restricted to start_room.
+//
+//   Intermediate (room r, entry_edge → exit_edge):
+//     Try transfer_path_[e_in * E + e_out].
+//     Fallback: voxelAstar restricted to room r.
+//
+//   Final (last transition → goal_surf in goal_room):
+//     Try trans_field_[t_enter] parent-chain walk from goal_surf (reversed).
+//     Fallback: voxelAstar restricted to goal_room.
+//
+// out_expanded counts voxel expansions from fallback segments only.
+// A pure-cache hit has out_expanded == 0.
+// Returns empty only if a per-segment voxelAstar fails (unreachable).
 // ─────────────────────────────────────────────────────────────────────────────
 std::vector<int> HierarchicalPlanner::stitchPath(
-  int start_surf, int goal_surf, const RoomRoute & route) const
+  int start_surf, int goal_surf, const RoomRoute & route,
+  int * out_expanded) const
 {
+  if (out_expanded) *out_expanded = 0;
+
   // Caller handles single-room queries (no edges to stitch).
   if (route.rooms.size() < 2 || route.edges.empty()) return {};
   if (route.edges.size() != route.rooms.size() - 1) return {};
@@ -720,93 +729,116 @@ std::vector<int> HierarchicalPlanner::stitchPath(
       dst.insert(dst.end(), src.begin(), src.end());
   };
 
-  std::vector<int> path;
-  path.reserve(256);
-
-  // ── Segment 0: start_room → first transition ────────────────────────────
-  // trans_field_[t] is forward Dijkstra from t in t's room, so parent[v]
-  // points one step CLOSER to t.  Walking parent chain from start_surf yields
-  // [start_surf, ..., t].
+  // Walk parent chain from 'from' toward 'target' in a trans_field.
+  // Returns {from, ..., target} on success, empty on failure.
+  auto walkToTarget = [](const TransitionField & field, int from, int target)
+    -> std::vector<int>
   {
-    const int e0     = route.edges[0];
-    const int t_exit = roomSideTrans(route.rooms[0], e0);
-    auto fit = trans_field_.find(t_exit);
-    if (fit == trans_field_.end()) return {};
-    const auto & field = fit->second;
-    if (!field.dist.count(start_surf)) return {};
-
     std::vector<int> seg;
-    int cur = start_surf;
-    int guard = 0;
-    while (cur >= 0) {
+    int cur = from;
+    for (int guard = 0; guard < 200000; ++guard) {
       seg.push_back(cur);
-      if (cur == t_exit) break;
+      if (cur == target) return seg;
       auto pit = field.parent.find(cur);
       if (pit == field.parent.end()) return {};
       cur = pit->second;
-      if (++guard > 100000) return {};   // sanity
     }
-    if (seg.empty() || seg.back() != t_exit) return {};
-    append(path, seg);
+    return {};  // exceeded guard
+  };
+
+  // Per-segment fallback counter
+  int total_fallback_exp = 0;
+
+  std::vector<int> path;
+  path.reserve(256);
+
+  // ── Segment 0: start_room → t_exit ───────────────────────────────────────
+  {
+    const int start_room = route.rooms[0];
+    const int e0         = route.edges[0];
+    const int t_exit     = roomSideTrans(start_room, e0);
+    bool cached = false;
+
+    if (start_surf == t_exit) {
+      path.push_back(start_surf);
+      cached = true;
+    } else {
+      auto fit = trans_field_.find(t_exit);
+      if (fit != trans_field_.end() && fit->second.dist.count(start_surf)) {
+        auto seg = walkToTarget(fit->second, start_surf, t_exit);
+        if (!seg.empty()) { append(path, seg); cached = true; }
+      }
+      if (!cached) {
+        // Fallback: single-room A*
+        int exp = 0;
+        auto seg = voxelAstar(start_surf, t_exit, start_room, &exp);
+        if (seg.empty()) return {};
+        append(path, seg);
+        total_fallback_exp += exp;
+      }
+    }
   }
 
-  // ── Intermediate segments: transfer_path_ lookups ───────────────────────
-  // For room route.rooms[i] (1 ≤ i ≤ N-2), entry edge = route.edges[i-1],
-  // exit edge = route.edges[i].
+  // ── Intermediate segments: transfer_path_ or per-room A* ─────────────────
   for (size_t i = 1; i + 1 < route.rooms.size(); ++i) {
     const int r       = route.rooms[i];
     const int e_in    = route.edges[i - 1];
     const int e_out   = route.edges[i];
-    const int t_enter = roomSideTrans(r, e_in);    // where we land after crossing e_in
-    const int t_exit  = roomSideTrans(r, e_out);   // where we leave via e_out
+    const int t_enter = roomSideTrans(r, e_in);
+    const int t_exit  = roomSideTrans(r, e_out);
 
-    // Bridge across edge: previous segment ended at the OTHER side of e_in;
-    // append t_enter (which is the room-r side).
+    // Bridge across edge boundary (one extra voxel hop between rooms)
     if (path.empty() || path.back() != t_enter) path.push_back(t_enter);
+    if (t_enter == t_exit) continue;
 
-    if (t_enter == t_exit) continue;  // degenerate: same boundary voxel
-
-    // transfer_path_[ei * E + ej] is the geodesic in r from
-    // roomSide(r, ei) to roomSide(r, ej).
-    const auto & seg = transfer_path_[e_in * E + e_out];
-    if (seg.empty()) return {};   // missing precompute → fall back
-    append(path, seg);
-  }
-
-  // ── Goal segment: last transition → goal_surf ───────────────────────────
-  {
-    const int e_last  = route.edges.back();
-    const int goal_room = route.rooms.back();
-    const int t_enter = roomSideTrans(goal_room, e_last);
-
-    // Bridge across the final edge.
-    if (path.empty() || path.back() != t_enter) path.push_back(t_enter);
-
-    if (t_enter == goal_surf) return path;
-
-    auto fit = trans_field_.find(t_enter);
-    if (fit == trans_field_.end()) return {};
-    const auto & field = fit->second;
-    if (!field.dist.count(goal_surf)) return {};
-
-    // Walk parent chain from goal_surf back to t_enter, then reverse to
-    // get [t_enter, ..., goal_surf].
-    std::vector<int> seg;
-    int cur = goal_surf;
-    int guard = 0;
-    while (cur >= 0) {
-      seg.push_back(cur);
-      if (cur == t_enter) break;
-      auto pit = field.parent.find(cur);
-      if (pit == field.parent.end()) return {};
-      cur = pit->second;
-      if (++guard > 100000) return {};
+    const auto & seg_cached = transfer_path_[e_in * E + e_out];
+    if (!seg_cached.empty()) {
+      append(path, seg_cached);
+    } else {
+      // Fallback: single-room A*
+      int exp = 0;
+      auto seg = voxelAstar(t_enter, t_exit, r, &exp);
+      if (seg.empty()) return {};
+      append(path, seg);
+      total_fallback_exp += exp;
     }
-    if (seg.empty() || seg.back() != t_enter) return {};
-    std::reverse(seg.begin(), seg.end());
-    append(path, seg);
   }
 
+  // ── Final segment: t_enter → goal_surf ───────────────────────────────────
+  {
+    const int goal_room = route.rooms.back();
+    const int e_last    = route.edges.back();
+    const int t_enter   = roomSideTrans(goal_room, e_last);
+
+    if (path.empty() || path.back() != t_enter) path.push_back(t_enter);
+    if (t_enter == goal_surf) { /* already there */ }
+    else {
+      bool cached = false;
+      auto fit = trans_field_.find(t_enter);
+      if (fit != trans_field_.end() && fit->second.dist.count(goal_surf)) {
+        // Walk from goal_surf toward t_enter, then reverse → [t_enter,...,goal]
+        auto seg = walkToTarget(fit->second, goal_surf, t_enter);
+        if (!seg.empty()) {
+          std::reverse(seg.begin(), seg.end());
+          append(path, seg);
+          cached = true;
+        }
+      }
+      if (!cached) {
+        // Fallback: single-room A*
+        int exp = 0;
+        auto seg = voxelAstar(t_enter, goal_surf, goal_room, &exp);
+        if (seg.empty()) return {};
+        append(path, seg);
+        total_fallback_exp += exp;
+      }
+    }
+  }
+
+  if (out_expanded) *out_expanded = total_fallback_exp;
+
+  fprintf(stderr, "[stitch] %zu voxels | fallback_exp=%d\n",
+          path.size(), total_fallback_exp);
   return path;
 }
 
@@ -926,7 +958,7 @@ HierarchicalPath HierarchicalPlanner::plan(
   bool used_stitch = false;
 
   if (room_seq.size() >= 2) {
-    all_surf_path = stitchPath(start_surf, goal_surf, route);
+    all_surf_path = stitchPath(start_surf, goal_surf, route, &total_expanded);
     if (!all_surf_path.empty()) used_stitch = true;
   }
 

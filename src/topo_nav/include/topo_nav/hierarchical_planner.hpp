@@ -98,14 +98,18 @@ private:
 
   /// Step 3 (new): assemble surface path from precomputed segments.
   ///
-  /// For each room in room_seq, looks up trans_field_ / transfer_path_ to
-  /// reconstruct the geodesic path through that room.  Online cost is O(path
-  /// length) — no voxel search.  Returns empty on failure (caller should
-  /// fall back to corridor A*).
+  /// For each room segment, prefers O(1) trans_field_/transfer_path_ lookup.
+  /// Falls back to single-room voxelAstar for any room whose trans_field_ was
+  /// skipped during precompute (> kMaxEdgesForDijkstra edges).
+  ///
+  /// @param out_expanded  Accumulates voxel expansions from fallback segments.
+  ///                      0 on a pure-lookup (all cached) path.
+  /// @returns empty only if a per-segment voxelAstar fails (unreachable).
   std::vector<int> stitchPath(
     int start_surf,
     int goal_surf,
-    const RoomRoute & route) const;
+    const RoomRoute & route,
+    int * out_expanded = nullptr) const;
 
   /// Step 3: Voxel-level A* on surface graph.
   /// Room filter (mutually exclusive, corridor takes priority):
