@@ -706,13 +706,18 @@ void HierarchicalPlanner::roomDijkstra(
 // ─────────────────────────────────────────────────────────────────────────────
 std::vector<int> HierarchicalPlanner::stitchPath(
   int start_surf, int goal_surf, const RoomRoute & route,
-  int * out_expanded) const
+  int * out_expanded, const std::unordered_set<int>* fallback_corridor) const
 {
   if (out_expanded) *out_expanded = 0;
 
+  fprintf(stderr, "[stitch-dbg] called: rooms=%zu edges=%zu\n",
+          route.rooms.size(), route.edges.size());
+
   // Caller handles single-room queries (no edges to stitch).
-  if (route.rooms.size() < 2 || route.edges.empty()) return {};
-  if (route.edges.size() != route.rooms.size() - 1) return {};
+  if (route.rooms.size() < 2 || route.edges.empty()) {
+    fprintf(stderr, "[stitch-dbg] FAIL-A\n"); return {}; }
+  if (route.edges.size() != route.rooms.size() - 1) {
+    fprintf(stderr, "[stitch-dbg] FAIL-B\n"); return {}; }
 
   const int E = transfer_E_;
 
@@ -769,9 +774,11 @@ std::vector<int> HierarchicalPlanner::stitchPath(
         if (!seg.empty()) { append(path, seg); cached = true; }
       }
       if (!cached) {
-        // Fallback: single-room A*
+        // Fallback: unrestricted A* to t_exit.  Transition voxels may sit on
+        // room boundaries with no same-room neighbours; room-restricted search
+        // fails in those cases.  Heuristic guidance keeps the path local.
         int exp = 0;
-        auto seg = voxelAstar(start_surf, t_exit, start_room, &exp);
+        auto seg = voxelAstar(start_surf, t_exit, -1, &exp, fallback_corridor);
         if (seg.empty()) return {};
         append(path, seg);
         total_fallback_exp += exp;
@@ -795,9 +802,9 @@ std::vector<int> HierarchicalPlanner::stitchPath(
     if (!seg_cached.empty()) {
       append(path, seg_cached);
     } else {
-      // Fallback: single-room A*
+      // Fallback: unrestricted A* between transition voxels.
       int exp = 0;
-      auto seg = voxelAstar(t_enter, t_exit, r, &exp);
+      auto seg = voxelAstar(t_enter, t_exit, -1, &exp, fallback_corridor);
       if (seg.empty()) return {};
       append(path, seg);
       total_fallback_exp += exp;
@@ -825,9 +832,9 @@ std::vector<int> HierarchicalPlanner::stitchPath(
         }
       }
       if (!cached) {
-        // Fallback: single-room A*
+        // Fallback: unrestricted A* from transition to goal_surf.
         int exp = 0;
-        auto seg = voxelAstar(t_enter, goal_surf, goal_room, &exp);
+        auto seg = voxelAstar(t_enter, goal_surf, -1, &exp, fallback_corridor);
         if (seg.empty()) return {};
         append(path, seg);
         total_fallback_exp += exp;
@@ -958,7 +965,9 @@ HierarchicalPath HierarchicalPlanner::plan(
   bool used_stitch = false;
 
   if (room_seq.size() >= 2) {
-    all_surf_path = stitchPath(start_surf, goal_surf, route, &total_expanded);
+    // Build corridor set for fallback A* segments (same as corridor A*)
+    std::unordered_set<int> stitch_corridor(room_seq.begin(), room_seq.end());
+    all_surf_path = stitchPath(start_surf, goal_surf, route, &total_expanded, &stitch_corridor);
     if (!all_surf_path.empty()) used_stitch = true;
   }
 

@@ -109,7 +109,8 @@ private:
     int start_surf,
     int goal_surf,
     const RoomRoute & route,
-    int * out_expanded = nullptr) const;
+    int * out_expanded = nullptr,
+    const std::unordered_set<int>* fallback_corridor = nullptr) const;
 
   /// Step 3: Voxel-level A* on surface graph.
   /// Room filter (mutually exclusive, corridor takes priority):
