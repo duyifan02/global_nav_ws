@@ -793,22 +793,36 @@ std::vector<int> HierarchicalPlanner::stitchPath(
     const int t_exit     = roomSideTrans(start_room, e0);
     bool cached = false;
 
+    fprintf(stderr, "[stitch-seg0] start_surf=%d(r%d) → t_exit=%d(r%d) e0=%d\n",
+            start_surf, rg_.room_labels[start_surf],
+            t_exit, rg_.room_labels[t_exit], e0);
+
     if (start_surf == t_exit) {
       path.push_back(start_surf);
       cached = true;
     } else {
       auto fit = trans_field_.find(t_exit);
-      if (fit != trans_field_.end() && fit->second.dist.count(start_surf)) {
-        auto seg = walkToTarget(fit->second, start_surf, t_exit);
-        if (!seg.empty()) { append(path, seg); cached = true; }
+      if (fit != trans_field_.end()) {
+        bool has_start = fit->second.dist.count(start_surf) > 0;
+        fprintf(stderr, "[stitch-seg0] trans_field_[%d] exists, |dist|=%zu, has_start=%d\n",
+                t_exit, fit->second.dist.size(), has_start);
+        if (has_start) {
+          auto seg = walkToTarget(fit->second, start_surf, t_exit);
+          if (!seg.empty()) { append(path, seg); cached = true;
+            fprintf(stderr, "[stitch-seg0] CACHED %zu voxels\n", seg.size());
+          } else {
+            fprintf(stderr, "[stitch-seg0] walkToTarget failed\n");
+          }
+        }
+      } else {
+        fprintf(stderr, "[stitch-seg0] NO trans_field_ for t_exit=%d\n", t_exit);
       }
       if (!cached) {
-        // Fallback: unrestricted A* to t_exit.  Transition voxels may sit on
-        // room boundaries with no same-room neighbours; room-restricted search
-        // fails in those cases.  Heuristic guidance keeps the path local.
         int exp = 0;
         auto seg = voxelAstar(start_surf, t_exit, -1, &exp, fallback_corridor);
-        if (seg.empty()) return {};
+        fprintf(stderr, "[stitch-seg0] FALLBACK A* → %zu voxels, exp=%d\n",
+                seg.size(), exp);
+        if (seg.empty()) { fprintf(stderr, "[stitch-seg0] FAIL\n"); return {}; }
         append(path, seg);
         total_fallback_exp += exp;
       }
@@ -823,18 +837,28 @@ std::vector<int> HierarchicalPlanner::stitchPath(
     const int t_enter = roomSideTrans(r, e_in);
     const int t_exit  = roomSideTrans(r, e_out);
 
+    fprintf(stderr, "[stitch-mid%zu] room=%d e_in=%d→e_out=%d t_enter=%d(r%d)→t_exit=%d(r%d)\n",
+            i, r, e_in, e_out,
+            t_enter, rg_.room_labels[t_enter],
+            t_exit, rg_.room_labels[t_exit]);
+
     // Bridge across edge boundary (one extra voxel hop between rooms)
     if (path.empty() || path.back() != t_enter) path.push_back(t_enter);
-    if (t_enter == t_exit) continue;
+    if (t_enter == t_exit) { fprintf(stderr, "[stitch-mid%zu] same voxel, skip\n", i); continue; }
 
-    const auto & seg_cached = transfer_path_[e_in * E + e_out];
+    const int slot = e_in * E + e_out;
+    const auto & seg_cached = transfer_path_[slot];
     if (!seg_cached.empty()) {
       append(path, seg_cached);
+      fprintf(stderr, "[stitch-mid%zu] CACHED %zu voxels (slot=%d)\n",
+              i, seg_cached.size(), slot);
     } else {
-      // Fallback: unrestricted A* between transition voxels.
+      fprintf(stderr, "[stitch-mid%zu] NO transfer_path_[%d], fallback A*\n", i, slot);
       int exp = 0;
       auto seg = voxelAstar(t_enter, t_exit, -1, &exp, fallback_corridor);
-      if (seg.empty()) return {};
+      fprintf(stderr, "[stitch-mid%zu] FALLBACK A* → %zu voxels, exp=%d\n",
+              i, seg.size(), exp);
+      if (seg.empty()) { fprintf(stderr, "[stitch-mid%zu] FAIL\n", i); return {}; }
       append(path, seg);
       total_fallback_exp += exp;
     }
@@ -846,25 +870,39 @@ std::vector<int> HierarchicalPlanner::stitchPath(
     const int e_last    = route.edges.back();
     const int t_enter   = roomSideTrans(goal_room, e_last);
 
+    fprintf(stderr, "[stitch-fin] t_enter=%d(r%d) → goal_surf=%d(r%d) e_last=%d\n",
+            t_enter, rg_.room_labels[t_enter],
+            goal_surf, rg_.room_labels[goal_surf], e_last);
+
     if (path.empty() || path.back() != t_enter) path.push_back(t_enter);
-    if (t_enter == goal_surf) { /* already there */ }
+    if (t_enter == goal_surf) { fprintf(stderr, "[stitch-fin] same voxel\n"); }
     else {
       bool cached = false;
       auto fit = trans_field_.find(t_enter);
-      if (fit != trans_field_.end() && fit->second.dist.count(goal_surf)) {
-        // Walk from goal_surf toward t_enter, then reverse → [t_enter,...,goal]
-        auto seg = walkToTarget(fit->second, goal_surf, t_enter);
-        if (!seg.empty()) {
-          std::reverse(seg.begin(), seg.end());
-          append(path, seg);
-          cached = true;
+      if (fit != trans_field_.end()) {
+        bool has_goal = fit->second.dist.count(goal_surf) > 0;
+        fprintf(stderr, "[stitch-fin] trans_field_[%d] exists, |dist|=%zu, has_goal=%d\n",
+                t_enter, fit->second.dist.size(), has_goal);
+        if (has_goal) {
+          auto seg = walkToTarget(fit->second, goal_surf, t_enter);
+          if (!seg.empty()) {
+            std::reverse(seg.begin(), seg.end());
+            append(path, seg);
+            cached = true;
+            fprintf(stderr, "[stitch-fin] CACHED %zu voxels\n", seg.size());
+          } else {
+            fprintf(stderr, "[stitch-fin] walkToTarget failed\n");
+          }
         }
+      } else {
+        fprintf(stderr, "[stitch-fin] NO trans_field_ for t_enter=%d\n", t_enter);
       }
       if (!cached) {
-        // Fallback: unrestricted A* from transition to goal_surf.
         int exp = 0;
         auto seg = voxelAstar(t_enter, goal_surf, -1, &exp, fallback_corridor);
-        if (seg.empty()) return {};
+        fprintf(stderr, "[stitch-fin] FALLBACK A* → %zu voxels, exp=%d\n",
+                seg.size(), exp);
+        if (seg.empty()) { fprintf(stderr, "[stitch-fin] FAIL\n"); return {}; }
         append(path, seg);
         total_fallback_exp += exp;
       }
