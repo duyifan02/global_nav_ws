@@ -314,21 +314,14 @@ HierarchicalPlanner::RoomRoute HierarchicalPlanner::roomAstar(
     return (e.room_i == room) ? e.transition_surf_i : e.transition_surf_j;
   };
 
-  // Helper: exact geodesic cost from start_surf → room-side transition of edge,
-  // using precomputed trans_field_ when available.  Falls back to Euclidean.
-  // Note: trans_field is forward-Dijkstra from t, so dist[start_surf] is the
-  // cost FROM t TO start_surf.  For undirected edges this equals the desired
-  // start→t cost; the up/down asymmetry within a single room is negligible
-  // (z varies little inside a non-staircase room).
+  // Helper: Euclidean cost estimates for start/goal segments.
+  // We intentionally use Euclidean (not precomputed penalty-weighted costs from
+  // trans_field_) so that roomAstar optimises for geometric path length rather
+  // than the obstacle-clearance-penalised cost function.  The penalty-weighted
+  // costs would cause A* to prefer "safe" but geometrically much longer routes.
   const auto [sx, sy, sz] = start_world;
   const auto [gx_w, gy_w, gz_w] = goal_world;
   auto exactStartCost = [&](int eidx) -> double {
-    const int t = roomSideTrans(start_room, eidx);
-    auto fit = trans_field_.find(t);
-    if (fit != trans_field_.end()) {
-      auto dit = fit->second.dist.find(start_surf);
-      if (dit != fit->second.dist.end()) return dit->second;
-    }
     const auto & edge = rg_.edges[eidx];
     const double dtx = edge.trans_wx - sx;
     const double dty = edge.trans_wy - sy;
@@ -336,12 +329,6 @@ HierarchicalPlanner::RoomRoute HierarchicalPlanner::roomAstar(
     return std::sqrt(dtx * dtx + dty * dty + dtz * dtz);
   };
   auto exactGoalCost = [&](int eidx) -> double {
-    const int t = roomSideTrans(goal_room, eidx);
-    auto fit = trans_field_.find(t);
-    if (fit != trans_field_.end()) {
-      auto dit = fit->second.dist.find(goal_surf);
-      if (dit != fit->second.dist.end()) return dit->second;
-    }
     const auto & edge = rg_.edges[eidx];
     const double dtx = edge.trans_wx - gx_w;
     const double dty = edge.trans_wy - gy_w;
@@ -438,16 +425,16 @@ HierarchicalPlanner::RoomRoute HierarchicalPlanner::roomAstar(
       if (ejdx == entry_ei) continue;   // no immediate back-tracking
       if (!room_allowed(nbr)) continue;
 
-      // Exact precomputed transfer cost: entry_ei → ejdx through cur_room.
-      double within_cost = transfer_cost_[entry_ei * E + ejdx];
-      if (within_cost >= INF) {
-        const auto & e_in  = rg_.edges[entry_ei];
-        const auto & e_out = rg_.edges[ejdx];
-        const double dx = e_out.trans_wx - e_in.trans_wx;
-        const double dy = e_out.trans_wy - e_in.trans_wy;
-        const double dz = e_out.trans_wz - e_in.trans_wz;
-        within_cost = std::sqrt(dx * dx + dy * dy + dz * dz);
-      }
+      // Euclidean distance between entry and exit transitions.
+      // Using geometric distance (not penalty-weighted transfer_cost_) so
+      // roomAstar picks the geometrically shortest route.  Penalty-weighted
+      // costs would bias toward "safe" but longer detours.
+      const auto & e_in  = rg_.edges[entry_ei];
+      const auto & e_out = rg_.edges[ejdx];
+      const double dx = e_out.trans_wx - e_in.trans_wx;
+      const double dy = e_out.trans_wy - e_in.trans_wy;
+      const double dz = e_out.trans_wz - e_in.trans_wz;
+      const double within_cost = std::sqrt(dx * dx + dy * dy + dz * dz);
 
       double new_g = g[cur_state] + within_cost;
       // Goal-room admission: add exact transition→goal_surf cost.
