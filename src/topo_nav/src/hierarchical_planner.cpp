@@ -158,12 +158,23 @@ void HierarchicalPlanner::precomputeTransfers()
       trans_field_[t_i] = std::move(field);
     }
 
+    // Report missing transfers (diagnostic)
+    int missing = 0;
+    for (size_t ii = 0; ii < incident.size(); ++ii) {
+      for (size_t jj = 0; jj < incident.size(); ++jj) {
+        if (ii == jj) continue;
+        const int slot = incident[ii].first * E + incident[jj].first;
+        if (transfer_cost_[slot] >= INF) ++missing;
+      }
+    }
+
     const auto r_t1 = std::chrono::steady_clock::now();
     const double r_ms = std::chrono::duration<double, std::milli>(r_t1 - r_t0).count();
-    if (r_ms > 5.0) {
+    if (r_ms > 5.0 || missing > 0) {
       fprintf(stderr,
-        "[HPA*] room %3d: %4d voxels, %zu edges, %zu Dijkstra calls, %.1f ms\n",
-        r, room_voxels, incident.size(), incident.size(), r_ms);
+        "[HPA*] room %3d: %4d voxels, %zu edges, %zu Dijkstra calls, %.1f ms%s\n",
+        r, room_voxels, incident.size(), incident.size(), r_ms,
+        missing > 0 ? (", MISSING " + std::to_string(missing) + " transfers").c_str() : "");
     }
   }
 }
@@ -662,10 +673,9 @@ void HierarchicalPlanner::roomDijkstra(
 
     if (rg_.room_labels[cur] == room_id) ++room_voxels_closed;
     // Early termination: all room-interior voxels are covered.
-    // Safety: also cap at 3× room size to avoid expanding the entire graph
-    // if some room voxels are unreachable (disconnected component).
     if (room_voxels_closed >= room_voxel_count) break;
-    if (static_cast<int>(visited.size()) > room_voxel_count * 3) break;
+    // Safety: cap at full graph size to handle disconnected room fragments.
+    if (visited.size() >= graph.size()) break;
 
     const auto & nd = graph[cur];
     for (int ni = 0; ni < nd.neighbor_count; ++ni) {
