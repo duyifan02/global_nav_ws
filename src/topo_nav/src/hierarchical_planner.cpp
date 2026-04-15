@@ -114,9 +114,9 @@ void HierarchicalPlanner::precomputeTransfers()
 
     const auto r_t0 = std::chrono::steady_clock::now();
 
-    // ── Phase 1: Room-restricted Dijkstra (fast, O(K × room_voxels)) ───────
-    // Covers all room-interior voxels.  Transition voxels with zero same-room
-    // neighbours may be left disconnected — Phase 2 patches those.
+    // Unrestricted Dijkstra with early termination at full room coverage.
+    // See roomDijkstra() for rationale: transitions sit on distance-field
+    // saddles and nearly always have zero same-room neighbours.
     for (size_t ii = 0; ii < incident.size(); ++ii) {
       const auto [ei, t_i] = incident[ii];
 
@@ -157,40 +157,12 @@ void HierarchicalPlanner::precomputeTransfers()
       trans_field_[t_i] = std::move(field);
     }
 
-    // ── Phase 2: Unrestricted A* patch for missing pairwise transfers ──────
-    // If room-restricted Dijkstra couldn't reach some transitions (boundary
-    // topology issue), run unrestricted voxelAstar for those specific pairs.
-    // Typically 0–5 extra calls; each is cheap because A* is heuristic-guided.
-    int patched = 0;
-    for (size_t ii = 0; ii < incident.size(); ++ii) {
-      for (size_t jj = 0; jj < incident.size(); ++jj) {
-        if (ii == jj) continue;
-        const auto [ei, t_i] = incident[ii];
-        const auto [ej, t_j] = incident[jj];
-        const int slot = ei * E + ej;
-        if (transfer_cost_[slot] < INF) continue;  // already found
-
-        // Run unrestricted A* between this specific pair
-        int exp = 0;
-        auto seg = voxelAstar(t_i, t_j, -1, &exp);
-        if (!seg.empty()) {
-          double cost = computePathLength(seg);
-          transfer_cost_[slot] = cost;
-          transfer_path_[slot] = std::move(seg);
-
-          double & mc = min_exit_cost_flat_[r * E + ej];
-          if (cost < mc) mc = cost;
-          ++patched;
-        }
-      }
-    }
-
     const auto r_t1 = std::chrono::steady_clock::now();
     const double r_ms = std::chrono::duration<double, std::milli>(r_t1 - r_t0).count();
-    if (r_ms > 5.0 || patched > 0) {
+    if (r_ms > 5.0) {
       fprintf(stderr,
-        "[HPA*] room %3d: %4d voxels, %zu edges, %zu Dijkstra + %d patched, %.1f ms\n",
-        r, room_voxels, incident.size(), incident.size(), patched, r_ms);
+        "[HPA*] room %3d: %4d voxels, %zu edges, %zu Dijkstra calls, %.1f ms\n",
+        r, room_voxels, incident.size(), incident.size(), r_ms);
     }
   }
 }
@@ -634,7 +606,6 @@ void HierarchicalPlanner::roomDijkstra(
   std::unordered_map<int, double> & out_dist,
   std::unordered_map<int, int>    & out_parent) const
 {
-  (void)room_voxel_count;  // reserved for future use
   const auto & graph    = vmap_->getSurfaceGraph();
   const auto & all_nbrs = vmap_->getAllNeighbors();
   const double res = vmap_->getResolution();
@@ -672,9 +643,19 @@ void HierarchicalPlanner::roomDijkstra(
   astar_came_from_[source_surf] = -1;
   open.emplace(0.0, source_surf);
 
-  // Track visited nodes for efficient extraction (avoids scanning all n voxels)
+  // Track visited nodes for efficient extraction
   std::vector<int> visited;
-  visited.reserve(4096);
+  visited.reserve(room_voxel_count > 0 ? room_voxel_count * 2 : 4096);
+
+  // Unrestricted Dijkstra with early termination:
+  // Persistent-homology transitions sit on distance-field saddles and
+  // almost always have zero same-room neighbours.  Room-restricted
+  // Dijkstra is fundamentally broken for them.  Instead we run
+  // unrestricted and stop once all room-interior voxels are covered.
+  int room_voxels_closed = 0;
+  // Safety cap: 5× room size handles rooms with extensive boundary contact.
+  const int safety_cap = std::max(room_voxel_count * 5,
+                                  static_cast<int>(graph.size()));
 
   while (!open.empty()) {
     auto [cur_g, cur] = open.top(); open.pop();
@@ -682,15 +663,14 @@ void HierarchicalPlanner::roomDijkstra(
     astar_cl_gen_[cur] = gen;
     visited.push_back(cur);
 
+    if (rg_.room_labels[cur] == room_id) ++room_voxels_closed;
+    if (room_voxels_closed >= room_voxel_count) break;
+    if (static_cast<int>(visited.size()) >= safety_cap) break;
+
     const auto & nd = graph[cur];
     for (int ni = 0; ni < nd.neighbor_count; ++ni) {
       const int nbr = all_nbrs[nd.neighbor_start + ni];
       if (astar_cl_gen_[nbr] == gen) continue;
-
-      // Room restriction: only expand within the target room.
-      // Transitions with zero same-room neighbours will be "stranded" —
-      // Phase 2 in precomputeTransfers() patches those with unrestricted A*.
-      if (room_id >= 0 && rg_.room_labels[nbr] != room_id) continue;
 
       const double tentative_g = cur_g + edge_cost(cur, nbr);
       const double nbr_g = (astar_g_gen_[nbr] == gen)
@@ -706,7 +686,8 @@ void HierarchicalPlanner::roomDijkstra(
     }
   }
 
-  // Extract results for visited nodes
+  // Store all visited voxels: bridge voxels (transiently in adjacent rooms)
+  // must be included for parent-chain walks to work in stitchPath.
   out_dist.clear();
   out_parent.clear();
   out_dist.reserve(visited.size());
