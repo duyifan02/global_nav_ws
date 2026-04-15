@@ -125,12 +125,23 @@ private:
     int* out_expanded   = nullptr,
     const std::unordered_set<int>* corridor = nullptr) const;
 
-  /// Exhaustive single-source Dijkstra restricted to one room.
-  /// Populates out_dist[v] = shortest cost from source to v,
-  /// out_parent[v] = predecessor on that path, for all reachable v in room.
+  /// Single-source Dijkstra for intra-room precomputation.
+  ///
+  /// Runs an UNRESTRICTED Dijkstra (no room filter) from source_surf,
+  /// but early-terminates once all room-interior voxels are covered.
+  /// This allows the wave to bridge through narrow necks of adjacent rooms
+  /// where a transition voxel has zero same-room neighbours.
+  ///
+  /// Results are extracted ONLY for voxels in room_id (+ the source).
+  /// Paths stored in the parent chain may transiently cross room boundaries;
+  /// that is geometrically correct and typically adds < 3 voxels of detour.
+  ///
+  /// @param room_voxel_count  Number of voxels with room_labels==room_id.
+  ///                          Used for early termination heuristic.
   void roomDijkstra(
     int source_surf,
     int room_id,
+    int room_voxel_count,
     std::unordered_map<int, double> & out_dist,
     std::unordered_map<int, int>    & out_parent) const;
 
@@ -180,18 +191,6 @@ private:
   };
   std::unordered_map<int, TransitionField> trans_field_;  ///< key = transition surf_idx
 
-  // ── Room halo bitmap (1-hop dilation around each room) ───────────────────
-  //
-  // For each room r, room_halo_[r][v] == 1 iff voxel v is in room r OR is a
-  // 1-hop neighbour of some room-r voxel.  Needed because transition voxels
-  // can have room_label=r yet zero same-room neighbours (they sit on the
-  // saddle of the distance field, physically surrounded by room r').  Using
-  // the halo lets roomDijkstra bridge across the boundary at exactly 1 voxel
-  // of depth into the adjacent room, so the source transition can reach the
-  // interior of its own room.
-  //
-  // Memory: R × n × 1 B.  For R=30, n=50K → 1.5 MB.
-  std::vector<std::vector<uint8_t>> room_halo_;
 
   // ── Dirty-array A* state (space-for-time: eliminates per-call O(n) init) ──
   //

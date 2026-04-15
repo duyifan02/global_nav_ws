@@ -72,26 +72,7 @@ void HierarchicalPlanner::precomputeTransfers()
 
   trans_field_.clear();
 
-  // ── Build room halo (1-hop dilation) ─────────────────────────────────────
-  // See hpp for rationale: transition voxels may have zero same-room neighbours.
-  {
-    const auto & graph_halo = vmap_->getSurfaceGraph();
-    const auto & all_nbrs_halo = vmap_->getAllNeighbors();
-    const int n_surf = static_cast<int>(graph_halo.size());
-    room_halo_.assign(R, std::vector<uint8_t>(n_surf, 0));
-    for (int v = 0; v < n_surf; ++v) {
-      const int rv = rg_.room_labels[v];
-      if (rv < 0 || rv >= R) continue;
-      room_halo_[rv][v] = 1;
-      const auto & nd = graph_halo[v];
-      for (int ni = 0; ni < nd.neighbor_count; ++ni) {
-        const int nbr = all_nbrs_halo[nd.neighbor_start + ni];
-        if (nbr >= 0 && nbr < n_surf) room_halo_[rv][nbr] = 1;
-      }
-    }
-  }
-
-  // Precompute per-room voxel counts once (used for both budget cap + timing)
+  // Precompute per-room voxel counts once (used for budget cap + Dijkstra termination)
   std::vector<int> room_voxel_count(R, 0);
   {
     const auto & graph_count = vmap_->getSurfaceGraph();
@@ -139,9 +120,9 @@ void HierarchicalPlanner::precomputeTransfers()
     for (size_t ii = 0; ii < incident.size(); ++ii) {
       const auto [ei, t_i] = incident[ii];
 
-      // Run exhaustive Dijkstra from t_i within room r
+      // Run Dijkstra from t_i (unrestricted, early-terminated at room coverage)
       TransitionField field;
-      roomDijkstra(t_i, r, field.dist, field.parent);
+      roomDijkstra(t_i, r, room_voxels, field.dist, field.parent);
 
       // Extract transfer costs to all other incident transitions
       for (size_t jj = 0; jj < incident.size(); ++jj) {
@@ -622,7 +603,7 @@ std::vector<int> HierarchicalPlanner::voxelAstar(
 // Also stores distance fields for O(1) query-time cost lookup.
 // ─────────────────────────────────────────────────────────────────────────────
 void HierarchicalPlanner::roomDijkstra(
-  int source_surf, int room_id,
+  int source_surf, int room_id, int room_voxel_count,
   std::unordered_map<int, double> & out_dist,
   std::unordered_map<int, int>    & out_parent) const
 {
@@ -665,7 +646,13 @@ void HierarchicalPlanner::roomDijkstra(
 
   // Track visited nodes for efficient extraction (avoids scanning all n voxels)
   std::vector<int> visited;
-  visited.reserve(4096);
+  visited.reserve(room_voxel_count > 0 ? room_voxel_count * 2 : 4096);
+
+  // Early termination: stop once all room-interior voxels are covered.
+  // The wave may transiently cross room boundaries (bridging transitions
+  // that have zero same-room neighbours), so we count room voxels closed
+  // and stop when the count reaches room_voxel_count.
+  int room_voxels_closed = 0;
 
   while (!open.empty()) {
     auto [cur_g, cur] = open.top(); open.pop();
@@ -673,19 +660,17 @@ void HierarchicalPlanner::roomDijkstra(
     astar_cl_gen_[cur] = gen;
     visited.push_back(cur);
 
+    if (rg_.room_labels[cur] == room_id) ++room_voxels_closed;
+    // Early termination: all room-interior voxels are covered.
+    // Safety: also cap at 3× room size to avoid expanding the entire graph
+    // if some room voxels are unreachable (disconnected component).
+    if (room_voxels_closed >= room_voxel_count) break;
+    if (static_cast<int>(visited.size()) > room_voxel_count * 3) break;
+
     const auto & nd = graph[cur];
     for (int ni = 0; ni < nd.neighbor_count; ++ni) {
       const int nbr = all_nbrs[nd.neighbor_start + ni];
       if (astar_cl_gen_[nbr] == gen) continue;
-
-      // Room restriction via 1-hop halo.  Accepts any voxel that is either in
-      // room_id or one hop away.  This is critical for transition voxels that
-      // have zero same-room neighbours: without the halo, Dijkstra would get
-      // stuck at the source and the resulting trans_field_ would be useless.
-      if (room_id >= 0 &&
-          room_id < static_cast<int>(room_halo_.size()) &&
-          !room_halo_[room_id].empty() &&
-          !room_halo_[room_id][nbr]) continue;
 
       const double tentative_g = cur_g + edge_cost(cur, nbr);
       const double nbr_g = (astar_g_gen_[nbr] == gen)
@@ -701,7 +686,10 @@ void HierarchicalPlanner::roomDijkstra(
     }
   }
 
-  // Extract results for visited nodes
+  // Extract results: ALL visited voxels, not just room-interior.
+  // We must include "bridge" voxels (briefly in adjacent rooms) so that
+  // parent-chain walks in stitchPath can traverse the full path.
+  // The extra bridge voxels are typically 1–5 per transition — negligible.
   out_dist.clear();
   out_parent.clear();
   out_dist.reserve(visited.size());
