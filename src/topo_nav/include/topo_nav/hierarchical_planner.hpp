@@ -166,6 +166,7 @@ private:
   /// Space: E² × (8 B cost + sizeof(vector) path) ≈ 40 KB for E=50.
   int transfer_E_ = 0;
   std::vector<double>           transfer_cost_;   ///< [e_in * E + e_out], INF = no path
+  std::vector<double>           transfer_length_; ///< [e_in * E + e_out], geometric path length (m), INF = no path
   std::vector<std::vector<int>> transfer_path_;   ///< [e_in * E + e_out], empty = no path
 
   /// Flat minimum exit cost table indexed by [room_id * transfer_E_ + edge_out].
