@@ -101,7 +101,7 @@ void HierarchicalPlanner::precomputeTransfers()
     // Work ≈ K Dijkstra calls × halo voxel count.  K=57 × 7636 = 435K still fits
     // a 500K budget (~50 ms for one big room); truly huge rooms (> 500K) are
     // still skipped to keep setTopoMap time bounded.
-    static constexpr size_t kPrecomputeBudget = 500000;
+    static constexpr size_t kPrecomputeBudget = 1000000;
     const int room_voxels = room_voxel_count[r];
     const size_t work = incident.size() * static_cast<size_t>(room_voxels);
     if (work > kPrecomputeBudget) {
