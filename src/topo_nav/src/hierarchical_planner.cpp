@@ -67,7 +67,6 @@ void HierarchicalPlanner::precomputeTransfers()
 
   // Flat tables: E×E for transfer, R×E for min exit cost
   transfer_cost_.assign(static_cast<size_t>(E) * E, INF);
-  transfer_length_.assign(static_cast<size_t>(E) * E, INF);
   transfer_path_.resize(static_cast<size_t>(E) * E);  // default empty vectors
   min_exit_cost_flat_.assign(static_cast<size_t>(R) * E, INF);
 
@@ -102,7 +101,7 @@ void HierarchicalPlanner::precomputeTransfers()
     // Work ≈ K Dijkstra calls × halo voxel count.  K=57 × 7636 = 435K still fits
     // a 500K budget (~50 ms for one big room); truly huge rooms (> 500K) are
     // still skipped to keep setTopoMap time bounded.
-    static constexpr size_t kPrecomputeBudget = 1000000;
+    static constexpr size_t kPrecomputeBudget = 500000;
     const int room_voxels = room_voxel_count[r];
     const size_t work = incident.size() * static_cast<size_t>(room_voxels);
     if (work > kPrecomputeBudget) {
@@ -146,7 +145,6 @@ void HierarchicalPlanner::precomputeTransfers()
             cur = (pit != field.parent.end()) ? pit->second : -1;
           }
           std::reverse(path.begin(), path.end());
-          transfer_length_[slot] = computePathLength(path);
           transfer_path_[slot] = std::move(path);
         }
 
@@ -427,18 +425,15 @@ HierarchicalPlanner::RoomRoute HierarchicalPlanner::roomAstar(
       if (ejdx == entry_ei) continue;   // no immediate back-tracking
       if (!room_allowed(nbr)) continue;
 
-      // Precomputed geometric path length through cur_room (Euclidean-only
-      // Dijkstra paths).  Falls back to straight-line Euclidean when no
-      // precomputed path exists (room skipped by budget cap).
-      double within_cost = transfer_length_[entry_ei * E + ejdx];
-      if (within_cost >= INF) {
-        const auto & e_in  = rg_.edges[entry_ei];
-        const auto & e_out = rg_.edges[ejdx];
-        const double dx = e_out.trans_wx - e_in.trans_wx;
-        const double dy = e_out.trans_wy - e_in.trans_wy;
-        const double dz = e_out.trans_wz - e_in.trans_wz;
-        within_cost = std::sqrt(dx * dx + dy * dy + dz * dz);
-      }
+      // Euclidean distance between entry and exit transitions.
+      // Using geometric distance (not penalty-weighted transfer_cost_) so
+      // roomAstar picks the geometrically shortest route.
+      const auto & e_in  = rg_.edges[entry_ei];
+      const auto & e_out = rg_.edges[ejdx];
+      const double dx = e_out.trans_wx - e_in.trans_wx;
+      const double dy = e_out.trans_wy - e_in.trans_wy;
+      const double dz = e_out.trans_wz - e_in.trans_wz;
+      const double within_cost = std::sqrt(dx * dx + dy * dy + dz * dz);
 
       double new_g = g[cur_state] + within_cost;
       // Goal-room admission: add exact transition→goal_surf cost.
@@ -610,17 +605,20 @@ void HierarchicalPlanner::roomDijkstra(
   }
   const uint32_t gen = astar_gen_;
 
-  // Pure Euclidean edge cost — produces geometrically shortest paths.
-  // The penalty-weighted cost (z-weight + obstacle clearance) is used only
-  // in voxelAstar for real-time navigation; here we want geometric
-  // optimality so that precomputed paths are as short as possible.
   auto edge_cost = [&](int from_idx, int to_idx) -> double {
     const auto & nf = graph[from_idx];
     const auto & nt = graph[to_idx];
     const int dx = std::abs(nt.x - nf.x);
     const int dy = std::abs(nt.y - nf.y);
-    const int dz = std::abs(nt.z - nf.z);
-    return res * std::sqrt(static_cast<double>(dx*dx + dy*dy + dz*dz));
+    const int dz_signed = nt.z - nf.z;
+    const int dz = std::abs(dz_signed);
+    const double eucl = res * std::sqrt(
+      static_cast<double>(dx*dx + dy*dy + dz*dz));
+    const double wz = (dz_signed > 0) ? w_up_ :
+                      (dz_signed < 0) ? w_down_ : 0.0;
+    const double z_cost = dz * res * wz;
+    const double clear  = w_obs_ * res / (nt.distance + 1);
+    return eucl + z_cost + clear;
   };
 
   using QElem = std::pair<double, int>;
