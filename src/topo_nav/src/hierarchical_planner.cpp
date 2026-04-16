@@ -97,11 +97,13 @@ void HierarchicalPlanner::precomputeTransfers()
     }
     if (incident.size() < 2) continue;  // dead-end: no through-paths to precompute
 
-    // Budget-based cap: skip rooms whose total work exceeds threshold.
-    // Work ≈ K Dijkstra calls × halo voxel count.  K=57 × 7636 = 435K still fits
-    // a 500K budget (~50 ms for one big room); truly huge rooms (> 500K) are
-    // still skipped to keep setTopoMap time bounded.
-    static constexpr size_t kPrecomputeBudget = 500000;
+    // Resolution-adaptive budget: at 0.1 m base budget is 500 K; at finer
+    // resolutions room voxel counts scale as ~(0.1/res)^2 (surface), so we
+    // scale the budget by the same factor to maintain coverage.  Precompute
+    // is offline, so longer build times at fine resolutions are acceptable.
+    const double res = vmap_->getResolution();
+    const double scale = std::max(1.0, (0.1 / res) * (0.1 / res));
+    const size_t kPrecomputeBudget = static_cast<size_t>(500000.0 * scale);
     const int room_voxels = room_voxel_count[r];
     const size_t work = incident.size() * static_cast<size_t>(room_voxels);
     if (work > kPrecomputeBudget) {
