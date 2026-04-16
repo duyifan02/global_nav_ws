@@ -50,7 +50,7 @@ std::vector<std::tuple<double, double, double>> JPS3D::plan(
         if (!snap_to_surface) {
             return {};
         }
-        int search_radius = static_cast<int>(5.0 / voxel_map_->getResolution());
+        int search_radius = std::min(static_cast<int>(5.0 / voxel_map_->getResolution()), 50);
         auto nearest = voxel_map_->findNearestValidSurface(sx, sy, sz, search_radius);
         if (std::get<0>(nearest) < 0) {
             return {};
@@ -64,7 +64,7 @@ std::vector<std::tuple<double, double, double>> JPS3D::plan(
         if (!snap_to_surface) {
             return {};
         }
-        int search_radius = static_cast<int>(5.0 / voxel_map_->getResolution());
+        int search_radius = std::min(static_cast<int>(5.0 / voxel_map_->getResolution()), 50);
         auto nearest = voxel_map_->findNearestValidSurface(gx, gy, gz, search_radius);
         if (std::get<0>(nearest) < 0) {
             return {};

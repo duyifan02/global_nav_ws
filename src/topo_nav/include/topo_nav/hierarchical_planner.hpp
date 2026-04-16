@@ -27,6 +27,7 @@ struct HierarchicalPath
   std::vector<int> room_sequence;   ///< Ordered room ids traversed
   std::vector<int> floor_sequence;  ///< Ordered floor ids traversed
 
+  double snap_ms            = 0.0;
   double floor_planning_ms  = 0.0;
   double room_planning_ms   = 0.0;
   double voxel_planning_ms  = 0.0;

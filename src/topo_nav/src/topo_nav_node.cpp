@@ -392,11 +392,11 @@ private:
     }
 
     RCLCPP_INFO(get_logger(),
-      "PlanHierarchical: %s | %.1f ms total (floor %.2f + room %.2f + voxel %.2f ms)"
+      "PlanHierarchical: %s | %.1f ms total (snap %.2f + floor %.2f + room %.2f + voxel %.2f ms)"
       " | %.2f m | rooms: %zu",
       hp.success ? "OK" : "FAIL",
       hp.total_planning_ms,
-      hp.floor_planning_ms, hp.room_planning_ms, hp.voxel_planning_ms,
+      hp.snap_ms, hp.floor_planning_ms, hp.room_planning_ms, hp.voxel_planning_ms,
       hp.path_length_m, hp.room_sequence.size());
   }
 

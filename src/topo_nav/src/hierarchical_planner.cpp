@@ -184,7 +184,8 @@ int HierarchicalPlanner::snapToSurface(
   if (idx >= 0) return idx;
   if (!snap) return -1;
 
-  const int radius = static_cast<int>(5.0 / vmap_->getResolution());
+  // Cap at 50 voxels (2.5 m at 0.05 m res) to avoid O(radius^3) blowup.
+  const int radius = std::min(static_cast<int>(5.0 / vmap_->getResolution()), 50);
   auto [nx, ny, nz] = vmap_->findNearestValidSurface(ix, iy, iz, radius);
   if (nx < 0) return -1;
   return vmap_->coordToSurfaceIdx(nx, ny, nz);
@@ -908,8 +909,11 @@ HierarchicalPath HierarchicalPlanner::plan(
   }
 
   // ── Snap start / goal to surface ─────────────────────────────────────────
+  auto snap_t0 = std::chrono::steady_clock::now();
   const int start_surf = snapToSurface(start_world, snap_to_surface);
   const int goal_surf  = snapToSurface(goal_world,  snap_to_surface);
+  auto snap_t1 = std::chrono::steady_clock::now();
+  result.snap_ms = std::chrono::duration<double, std::milli>(snap_t1 - snap_t0).count();
   if (start_surf < 0 || goal_surf < 0) {
     result.message = "Cannot snap start/goal to surface.";
     return result;
