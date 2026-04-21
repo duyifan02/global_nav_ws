@@ -50,13 +50,16 @@ std::vector<std::tuple<double, double, double>> JPS3D::plan(
         if (!snap_to_surface) {
             return {};
         }
-        int search_radius = std::min(static_cast<int>(5.0 / voxel_map_->getResolution()), 50);
-        auto nearest = voxel_map_->findNearestValidSurface(sx, sy, sz, search_radius);
-        if (std::get<0>(nearest) < 0) {
-            return {};
+        start_idx = -1;
+        for (int r : {5, 20, 50}) {
+            auto nearest = voxel_map_->findNearestValidSurface(sx, sy, sz, r);
+            if (std::get<0>(nearest) >= 0) {
+                auto [nx, ny, nz] = nearest;
+                start_idx = voxel_map_->coordToSurfaceIdx(nx, ny, nz);
+                break;
+            }
         }
-        auto [nx, ny, nz] = nearest;
-        start_idx = voxel_map_->coordToSurfaceIdx(nx, ny, nz);
+        if (start_idx < 0) return {};
     }
 
     int goal_idx = voxel_map_->coordToSurfaceIdx(gx, gy, gz);
@@ -64,13 +67,16 @@ std::vector<std::tuple<double, double, double>> JPS3D::plan(
         if (!snap_to_surface) {
             return {};
         }
-        int search_radius = std::min(static_cast<int>(5.0 / voxel_map_->getResolution()), 50);
-        auto nearest = voxel_map_->findNearestValidSurface(gx, gy, gz, search_radius);
-        if (std::get<0>(nearest) < 0) {
-            return {};
+        goal_idx = -1;
+        for (int r : {5, 20, 50}) {
+            auto nearest = voxel_map_->findNearestValidSurface(gx, gy, gz, r);
+            if (std::get<0>(nearest) >= 0) {
+                auto [nx, ny, nz] = nearest;
+                goal_idx = voxel_map_->coordToSurfaceIdx(nx, ny, nz);
+                break;
+            }
         }
-        auto [nx, ny, nz] = nearest;
-        goal_idx = voxel_map_->coordToSurfaceIdx(nx, ny, nz);
+        if (goal_idx < 0) return {};
     }
 
     auto path_indices = searchOnGraph(start_idx, goal_idx);

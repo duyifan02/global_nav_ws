@@ -184,11 +184,14 @@ int HierarchicalPlanner::snapToSurface(
   if (idx >= 0) return idx;
   if (!snap) return -1;
 
-  // Cap at 50 voxels (2.5 m at 0.05 m res) to avoid O(radius^3) blowup.
-  const int radius = std::min(static_cast<int>(5.0 / vmap_->getResolution()), 50);
-  auto [nx, ny, nz] = vmap_->findNearestValidSurface(ix, iy, iz, radius);
-  if (nx < 0) return -1;
-  return vmap_->coordToSurfaceIdx(nx, ny, nz);
+  // Tiered search: most indoor query points lie within 1–2 voxels of the
+  // surface, so a tiny radius succeeds instantly (11^3 = 1.3 K iterations).
+  // Expand only on the rare miss.
+  for (int r : {5, 20, 50}) {
+    auto [nx, ny, nz] = vmap_->findNearestValidSurface(ix, iy, iz, r);
+    if (nx >= 0) return vmap_->coordToSurfaceIdx(nx, ny, nz);
+  }
+  return -1;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
