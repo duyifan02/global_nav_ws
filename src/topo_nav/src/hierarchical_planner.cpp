@@ -40,6 +40,7 @@ void HierarchicalPlanner::setTopoMap(const RoomGraph & rg, const FloorGraph & fg
   // ── Precompute HPA* transfer table ────────────────────────────────────────
   transfer_E_          = 0;
   transfer_cost_.clear();
+  transfer_length_.clear();
   transfer_path_.clear();
   min_exit_cost_flat_.clear();
   precomputeTransfers();
@@ -67,6 +68,7 @@ void HierarchicalPlanner::precomputeTransfers()
 
   // Flat tables: E×E for transfer, R×E for min exit cost
   transfer_cost_.assign(static_cast<size_t>(E) * E, INF);
+  transfer_length_.assign(static_cast<size_t>(E) * E, INF);
   transfer_path_.resize(static_cast<size_t>(E) * E);  // default empty vectors
   min_exit_cost_flat_.assign(static_cast<size_t>(R) * E, INF);
 
@@ -136,7 +138,7 @@ void HierarchicalPlanner::precomputeTransfers()
         const int slot = ei * E + ej;
         transfer_cost_[slot] = cost;
 
-        // Reconstruct path from parent chain
+        // Reconstruct path from parent chain and measure geometric length
         if (cost < INF) {
           std::vector<int> path;
           int cur = t_j;
@@ -147,6 +149,23 @@ void HierarchicalPlanner::precomputeTransfers()
             cur = (pit != field.parent.end()) ? pit->second : -1;
           }
           std::reverse(path.begin(), path.end());
+
+          // Compute geometric length (metres) of the reconstructed path.
+          // This is independent of the penalty-weighted Dijkstra cost and
+          // reflects the true Euclidean distance the robot will travel.
+          const auto & sg = vmap_->getSurfaceGraph();
+          const double vres = vmap_->getResolution();
+          double geo_len = 0.0;
+          for (size_t pi = 1; pi < path.size(); ++pi) {
+            const auto & a = sg[path[pi - 1]];
+            const auto & b = sg[path[pi]];
+            const double ddx = (b.x - a.x) * vres;
+            const double ddy = (b.y - a.y) * vres;
+            const double ddz = (b.z - a.z) * vres;
+            geo_len += std::sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
+          }
+          transfer_length_[slot] = geo_len;
+
           transfer_path_[slot] = std::move(path);
         }
 
@@ -431,15 +450,22 @@ HierarchicalPlanner::RoomRoute HierarchicalPlanner::roomAstar(
       if (ejdx == entry_ei) continue;   // no immediate back-tracking
       if (!room_allowed(nbr)) continue;
 
-      // Euclidean distance between entry and exit transitions.
-      // Using geometric distance (not penalty-weighted transfer_cost_) so
-      // roomAstar picks the geometrically shortest route.
-      const auto & e_in  = rg_.edges[entry_ei];
-      const auto & e_out = rg_.edges[ejdx];
-      const double dx = e_out.trans_wx - e_in.trans_wx;
-      const double dy = e_out.trans_wy - e_in.trans_wy;
-      const double dz = e_out.trans_wz - e_in.trans_wz;
-      const double within_cost = std::sqrt(dx * dx + dy * dy + dz * dz);
+      // Within-room traversal cost: prefer exact precomputed geometric length
+      // (actual metres the path covers); fall back to Euclidean lower bound
+      // when the transfer was not precomputed (room skipped by budget cap).
+      double within_cost;
+      const int tslot = entry_ei * transfer_E_ + ejdx;
+      if (tslot >= 0 && tslot < static_cast<int>(transfer_length_.size()) &&
+          transfer_length_[tslot] < std::numeric_limits<double>::infinity()) {
+        within_cost = transfer_length_[tslot];
+      } else {
+        const auto & e_in  = rg_.edges[entry_ei];
+        const auto & e_out = rg_.edges[ejdx];
+        const double dx = e_out.trans_wx - e_in.trans_wx;
+        const double dy = e_out.trans_wy - e_in.trans_wy;
+        const double dz = e_out.trans_wz - e_in.trans_wz;
+        within_cost = std::sqrt(dx * dx + dy * dy + dz * dz);
+      }
 
       double new_g = g[cur_state] + within_cost;
       // Goal-room admission: add exact transition→goal_surf cost.
