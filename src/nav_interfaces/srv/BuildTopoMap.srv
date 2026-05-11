@@ -3,6 +3,10 @@ float64 floor_separation_m     # H_floor in metres (typically 2.5)
 float64 corridor_aspect_ratio  # γ for corridor classification (typically 3.0)
 float64 staircase_variance_m   # σ_stair in metres (typically 0.5)
 float64 robot_diameter_m       # w_robot in metres (for passage-width filter)
+string planner_mode            # "full" (default), "no_stitch", "flat_surface", "grid_partition", "prm", "alt_astar"
+int32 target_room_count        # for grid_partition mode (0 = auto from PH default)
+int32 num_prm_samples          # for PRM mode (0 = default 1000)
+int32 num_landmarks            # for ALT mode (0 = default 16)
 ---
 bool success
 string message
@@ -11,3 +15,7 @@ int32 num_floors
 int32 num_staircases
 int32 num_corridors
 float64 build_time_ms
+float64 persistence_time_ms
+float64 segmentation_time_ms
+float64 precompute_time_ms
+int64 memory_usage_bytes

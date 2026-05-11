@@ -52,17 +52,24 @@ public:
     double w_obs  = 0.5);
 
   /// Load topological map.  Must be called before plan().
-  void setTopoMap(const RoomGraph & rg, const FloorGraph & fg);
+  /// @param skip_precompute  If true, skip precomputeTransfers() (for no_stitch ablation)
+  void setTopoMap(const RoomGraph & rg, const FloorGraph & fg,
+                  bool skip_precompute = false);
 
   bool hasTopoMap() const { return has_topo_map_; }
 
-  /// Plan from start to goal.
-  ///
-  /// @param start_world      World coordinate of start
-  /// @param goal_world       World coordinate of goal
-  /// @param robot_diameter_m Passage-width filter (metres)
-  /// @param snap_to_surface  Snap start/goal to nearest surface voxel
+  /// Enable/disable stitchPath at query time (for no_stitch ablation).
+  void setUseStitch(bool v) { use_stitch_ = v; }
+
+  /// Plan from start to goal (requires setTopoMap).
   HierarchicalPath plan(
+    const std::tuple<double, double, double> & start_world,
+    const std::tuple<double, double, double> & goal_world,
+    float  robot_diameter_m = 0.4f,
+    bool   snap_to_surface  = true);
+
+  /// Flat surface A* (no hierarchy).  Only requires a loaded VoxelMap.
+  HierarchicalPath planFlat(
     const std::tuple<double, double, double> & start_world,
     const std::tuple<double, double, double> & goal_world,
     float  robot_diameter_m = 0.4f,
@@ -220,6 +227,7 @@ private:
   RoomGraph  rg_;
   FloorGraph fg_;
   bool has_topo_map_ = false;
+  bool use_stitch_   = true;   ///< false = no_stitch ablation mode
 };
 
 }  // namespace topo_nav

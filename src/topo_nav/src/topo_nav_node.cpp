@@ -15,8 +15,11 @@
 
 #include "topo_nav/persistence.hpp"
 #include "topo_nav/room_segmenter.hpp"
+#include "topo_nav/grid_segmenter.hpp"
 #include "topo_nav/floor_detector.hpp"
 #include "topo_nav/hierarchical_planner.hpp"
+#include "topo_nav/prm_planner.hpp"
+#include "topo_nav/alt_planner.hpp"
 
 // Reuse existing map-loading services from nav_interfaces
 #include "nav_interfaces/srv/set_voxel_map.hpp"
@@ -54,6 +57,9 @@ public:
     declare_parameter<double>("robot_diameter_m",      0.4);
 
     // ── Shared map ──────────────────────────────────────────────────────────
+    w_up_   = get_parameter("w_up").as_double();
+    w_down_ = get_parameter("w_down").as_double();
+    w_obs_  = get_parameter("w_obs").as_double();
     voxel_map_ = std::make_shared<jps_planner_3d::VoxelMap>();
     configureMap();
     rebuildPlanner();
@@ -234,19 +240,30 @@ private:
       return;
     }
 
-    const auto t0 = std::chrono::steady_clock::now();
+    const std::string mode = req->planner_mode.empty() ? "full" : req->planner_mode;
+    planner_mode_ = mode;
 
-    // Algorithm 1: persistent homology
+    const auto t0 = std::chrono::steady_clock::now();
+    double persistence_ms = 0.0, segmentation_ms = 0.0, precompute_ms = 0.0;
+
+    // ── flat_surface: no topo map needed, just ensure planner is ready ──────
+    if (mode == "flat_surface") {
+      flat_mode_ = true;
+      const auto t1 = std::chrono::steady_clock::now();
+      res->success       = true;
+      res->message       = "Flat surface mode (no topo map).";
+      res->build_time_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+      res->memory_usage_bytes = static_cast<int64_t>(
+        voxel_map_->getConstructedSceneMemoryUsageBytes());
+      RCLCPP_INFO(get_logger(), "BuildTopoMap [flat_surface]: skipped topo construction");
+      return;
+    }
+    flat_mode_ = false;
+
+    // ── Common parameters ───────────────────────────────────────────────────
     const float tau = static_cast<float>(req->persistence_tau > 0
       ? req->persistence_tau
       : get_parameter("persistence_tau").as_double());
-
-    pr_ = computePersistence(*voxel_map_);
-
-    // Algorithm 2: room segmentation
-    rg_ = segmentRooms(pr_, *voxel_map_, tau);
-
-    // Floor detection + room classification
     const float H_floor = static_cast<float>(req->floor_separation_m > 0
       ? req->floor_separation_m
       : get_parameter("floor_separation_m").as_double());
@@ -257,10 +274,60 @@ private:
       ? req->corridor_aspect_ratio
       : get_parameter("corridor_aspect_ratio").as_double());
 
+    // ── Segmentation (PH or grid) ───────────────────────────────────────────
+    if (mode == "grid_partition") {
+      // Grid-based room segmentation (Config C / baseline)
+      auto seg_t0 = std::chrono::steady_clock::now();
+      const int target = req->target_room_count > 0 ? req->target_room_count : 0;
+      rg_ = segmentRoomsGrid(*voxel_map_, target, tau);
+      auto seg_t1 = std::chrono::steady_clock::now();
+      segmentation_ms = std::chrono::duration<double, std::milli>(seg_t1 - seg_t0).count();
+    } else {
+      // PH-based segmentation (full, no_stitch, prm, alt_astar)
+      auto ph_t0 = std::chrono::steady_clock::now();
+      pr_ = computePersistence(*voxel_map_);
+      auto ph_t1 = std::chrono::steady_clock::now();
+      persistence_ms = std::chrono::duration<double, std::milli>(ph_t1 - ph_t0).count();
+
+      auto seg_t0 = std::chrono::steady_clock::now();
+      rg_ = segmentRooms(pr_, *voxel_map_, tau);
+      auto seg_t1 = std::chrono::steady_clock::now();
+      segmentation_ms = std::chrono::duration<double, std::milli>(seg_t1 - seg_t0).count();
+    }
+
+    // Floor detection + room classification
     fg_ = detectFloors(rg_, *voxel_map_, H_floor, sigma, gamma);
 
-    // Install topo map into planner
-    planner_->setTopoMap(rg_, fg_);
+    // ── Install topo map into planner ───────────────────────────────────────
+    const bool skip_precompute = (mode == "no_stitch");
+    auto pc_t0 = std::chrono::steady_clock::now();
+    planner_->setTopoMap(rg_, fg_, skip_precompute);
+    planner_->setUseStitch(mode != "no_stitch");
+    auto pc_t1 = std::chrono::steady_clock::now();
+    precompute_ms = std::chrono::duration<double, std::milli>(pc_t1 - pc_t0).count();
+
+    // ── Build alternative planners if requested ─────────────────────────────
+    if (mode == "prm") {
+      auto prm_t0 = std::chrono::steady_clock::now();
+      prm_planner_ = std::make_unique<PRMPlanner>(vmap_, w_up_, w_down_, w_obs_);
+      const int n_samples = req->num_prm_samples > 0 ? req->num_prm_samples : 1000;
+      prm_planner_->buildRoadmap(n_samples, 15, 0.0);
+      auto prm_t1 = std::chrono::steady_clock::now();
+      precompute_ms = std::chrono::duration<double, std::milli>(prm_t1 - prm_t0).count();
+    } else {
+      prm_planner_.reset();
+    }
+
+    if (mode == "alt_astar") {
+      auto alt_t0 = std::chrono::steady_clock::now();
+      alt_planner_ = std::make_unique<ALTPlanner>(vmap_, w_up_, w_down_, w_obs_);
+      const int n_landmarks = req->num_landmarks > 0 ? req->num_landmarks : 16;
+      alt_planner_->precompute(n_landmarks);
+      auto alt_t1 = std::chrono::steady_clock::now();
+      precompute_ms = std::chrono::duration<double, std::milli>(alt_t1 - alt_t0).count();
+    } else {
+      alt_planner_.reset();
+    }
 
     const auto t1 = std::chrono::steady_clock::now();
     const double build_ms =
@@ -273,19 +340,25 @@ private:
       if (rm.type == RoomType::CORRIDOR)  ++n_corr;
     }
 
-    res->success        = true;
-    res->message        = "Topo map built.";
-    res->num_rooms      = rg_.num_rooms;
-    res->num_floors     = static_cast<int>(fg_.floors.size());
-    res->num_staircases = n_stair;
-    res->num_corridors  = n_corr;
-    res->build_time_ms  = build_ms;
+    res->success             = true;
+    res->message             = "Topo map built (" + mode + ").";
+    res->num_rooms           = rg_.num_rooms;
+    res->num_floors          = static_cast<int>(fg_.floors.size());
+    res->num_staircases      = n_stair;
+    res->num_corridors       = n_corr;
+    res->build_time_ms       = build_ms;
+    res->persistence_time_ms = persistence_ms;
+    res->segmentation_time_ms = segmentation_ms;
+    res->precompute_time_ms  = precompute_ms;
+    res->memory_usage_bytes  = static_cast<int64_t>(
+      voxel_map_->getConstructedSceneMemoryUsageBytes());
 
     RCLCPP_INFO(get_logger(),
-      "BuildTopoMap: %d rooms (%d staircases, %d corridors), "
-      "%d floors, %.1f ms (incl. HPA* precomputation)",
-      res->num_rooms, res->num_staircases, res->num_corridors,
-      res->num_floors, res->build_time_ms);
+      "BuildTopoMap [%s]: %d rooms (%d stair, %d corr), %d floors, "
+      "%.1f ms (PH %.1f + seg %.1f + precomp %.1f ms)",
+      mode.c_str(), res->num_rooms, res->num_staircases, res->num_corridors,
+      res->num_floors, res->build_time_ms,
+      persistence_ms, segmentation_ms, precompute_ms);
   }
 
   // ── GetRoomLabels ─────────────────────────────────────────────────────────
@@ -338,12 +411,6 @@ private:
   {
     std::lock_guard<std::mutex> lock(map_mutex_);
 
-    if (!planner_->hasTopoMap()) {
-      res->success = false;
-      res->message = "Topo map not built.";
-      return;
-    }
-
     const float robot_d = static_cast<float>(
       req->robot_diameter_m > 0
         ? req->robot_diameter_m
@@ -358,12 +425,29 @@ private:
       req->goal.position.y,
       req->goal.position.z);
 
-    const HierarchicalPath hp = planner_->plan(
-      start_w, goal_w, robot_d, req->snap_to_surface);
+    HierarchicalPath hp;
+
+    if (flat_mode_) {
+      // Config B: flat surface A*
+      hp = planner_->planFlat(start_w, goal_w, robot_d, req->snap_to_surface);
+    } else if (planner_mode_ == "prm" && prm_planner_) {
+      hp = prm_planner_->plan(start_w, goal_w, robot_d, req->snap_to_surface);
+    } else if (planner_mode_ == "alt_astar" && alt_planner_) {
+      hp = alt_planner_->plan(start_w, goal_w, robot_d, req->snap_to_surface);
+    } else {
+      // full, no_stitch, grid_partition all use hierarchical plan()
+      if (!planner_->hasTopoMap()) {
+        res->success = false;
+        res->message = "Topo map not built.";
+        return;
+      }
+      hp = planner_->plan(start_w, goal_w, robot_d, req->snap_to_surface);
+    }
 
     res->success              = hp.success;
     res->message              = hp.message;
     res->planning_time_ms     = hp.total_planning_ms;
+    res->snap_ms              = hp.snap_ms;
     res->floor_planning_ms    = hp.floor_planning_ms;
     res->room_planning_ms     = hp.room_planning_ms;
     res->voxel_planning_ms    = hp.voxel_planning_ms;
@@ -392,8 +476,9 @@ private:
     }
 
     RCLCPP_INFO(get_logger(),
-      "PlanHierarchical: %s | %.1f ms total (snap %.2f + floor %.2f + room %.2f + voxel %.2f ms)"
+      "PlanHierarchical [%s]: %s | %.1f ms (snap %.2f + floor %.2f + room %.2f + voxel %.2f)"
       " | %.2f m | rooms: %zu",
+      planner_mode_.c_str(),
       hp.success ? "OK" : "FAIL",
       hp.total_planning_ms,
       hp.snap_ms, hp.floor_planning_ms, hp.room_planning_ms, hp.voxel_planning_ms,
@@ -457,6 +542,12 @@ private:
   std::mutex map_mutex_;
   std::shared_ptr<jps_planner_3d::VoxelMap> voxel_map_;
   std::unique_ptr<HierarchicalPlanner>       planner_;
+  std::unique_ptr<PRMPlanner>                prm_planner_;
+  std::unique_ptr<ALTPlanner>                alt_planner_;
+
+  double w_up_ = 2.0, w_down_ = 1.0, w_obs_ = 0.5;
+  std::string planner_mode_ = "full";
+  bool flat_mode_ = false;
 
   PersistenceResult pr_;
   RoomGraph         rg_;

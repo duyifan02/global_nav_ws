@@ -21,19 +21,18 @@ HierarchicalPlanner::HierarchicalPlanner(
 : vmap_(std::move(vmap)), w_up_(w_up), w_down_(w_down), w_obs_(w_obs)
 {}
 
-void HierarchicalPlanner::setTopoMap(const RoomGraph & rg, const FloorGraph & fg)
+void HierarchicalPlanner::setTopoMap(const RoomGraph & rg, const FloorGraph & fg,
+                                     bool skip_precompute)
 {
   rg_ = rg;
   fg_ = fg;
   has_topo_map_ = true;
 
   // ── Initialise persistent dirty-array A* state ────────────────────────────
-  // Allocate exactly once; reuse across all voxelAstar() calls via generation
-  // counter.  astar_gen_ = 0 means "no call yet"; first call bumps to 1.
   const int n = static_cast<int>(vmap_->getSurfaceGraph().size());
   astar_g_.resize(n);
   astar_came_from_.resize(n);
-  astar_g_gen_.assign(n, 0u);   // 0 = uninitialised (gen counter starts at 1)
+  astar_g_gen_.assign(n, 0u);
   astar_cl_gen_.assign(n, 0u);
   astar_gen_ = 0u;
 
@@ -42,7 +41,9 @@ void HierarchicalPlanner::setTopoMap(const RoomGraph & rg, const FloorGraph & fg
   transfer_cost_.clear();
   transfer_path_.clear();
   min_exit_cost_flat_.clear();
-  precomputeTransfers();
+  if (!skip_precompute) {
+    precomputeTransfers();
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1012,7 +1013,7 @@ HierarchicalPath HierarchicalPlanner::plan(
   std::vector<int> all_surf_path;
   bool used_stitch = false;
 
-  if (room_seq.size() >= 2) {
+  if (room_seq.size() >= 2 && use_stitch_) {
     // Build corridor set for fallback A* segments (same as corridor A*)
     std::unordered_set<int> stitch_corridor(room_seq.begin(), room_seq.end());
     all_surf_path = stitchPath(start_surf, goal_surf, route, &total_expanded, &stitch_corridor);
@@ -1062,6 +1063,70 @@ HierarchicalPath HierarchicalPlanner::plan(
 
   result.success = true;
   result.message = "OK";
+  return result;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Flat surface A* (Config B ablation — no hierarchy, no precomputation)
+// ─────────────────────────────────────────────────────────────────────────────
+HierarchicalPath HierarchicalPlanner::planFlat(
+  const std::tuple<double, double, double> & start_world,
+  const std::tuple<double, double, double> & goal_world,
+  float /*robot_diameter_m*/,
+  bool snap_to_surface)
+{
+  HierarchicalPath result;
+  auto total_t0 = std::chrono::steady_clock::now();
+
+  // Ensure dirty-array state is allocated (planFlat doesn't need setTopoMap)
+  const int n = static_cast<int>(vmap_->getSurfaceGraph().size());
+  if (static_cast<int>(astar_g_.size()) != n) {
+    astar_g_.resize(n);
+    astar_came_from_.resize(n);
+    astar_g_gen_.assign(n, 0u);
+    astar_cl_gen_.assign(n, 0u);
+    astar_gen_ = 0u;
+  }
+
+  // Snap
+  auto snap_t0 = std::chrono::steady_clock::now();
+  const int start_surf = snapToSurface(start_world, snap_to_surface);
+  const int goal_surf  = snapToSurface(goal_world,  snap_to_surface);
+  auto snap_t1 = std::chrono::steady_clock::now();
+  result.snap_ms = std::chrono::duration<double, std::milli>(snap_t1 - snap_t0).count();
+
+  if (start_surf < 0 || goal_surf < 0) {
+    result.message = "Cannot snap start/goal to surface.";
+    return result;
+  }
+
+  // Unrestricted A* on full surface graph
+  auto voxel_t0 = std::chrono::steady_clock::now();
+  int expanded = 0;
+  auto path = voxelAstar(start_surf, goal_surf, -1, &expanded);
+  auto voxel_t1 = std::chrono::steady_clock::now();
+  result.voxel_planning_ms =
+    std::chrono::duration<double, std::milli>(voxel_t1 - voxel_t0).count();
+  result.voxel_nodes_expanded = expanded;
+
+  if (path.empty()) {
+    result.message = "Flat surface A* found no path.";
+    return result;
+  }
+
+  const auto & graph = vmap_->getSurfaceGraph();
+  result.waypoints.reserve(path.size());
+  for (int idx : path) {
+    const auto & nd = graph[idx];
+    result.waypoints.push_back(vmap_->gridToWorld(nd.x, nd.y, nd.z));
+  }
+  result.path_length_m = computePathLength(path);
+
+  auto total_t1 = std::chrono::steady_clock::now();
+  result.total_planning_ms =
+    std::chrono::duration<double, std::milli>(total_t1 - total_t0).count();
+  result.success = true;
+  result.message = "OK (flat surface A*)";
   return result;
 }
 

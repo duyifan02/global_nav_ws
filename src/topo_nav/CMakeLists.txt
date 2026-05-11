@@ -18,8 +18,11 @@ find_package(rosidl_default_runtime REQUIRED)
 add_library(${PROJECT_NAME}_core SHARED
   src/persistence.cpp
   src/room_segmenter.cpp
+  src/grid_segmenter.cpp
   src/floor_detector.cpp
   src/hierarchical_planner.cpp
+  src/prm_planner.cpp
+  src/alt_planner.cpp
 )
 
 target_include_directories(${PROJECT_NAME}_core PUBLIC
