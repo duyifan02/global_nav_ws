@@ -84,6 +84,11 @@ RESULT_COLS = [
     'memory_usage_bytes',
     'total_time_ms',
     'trials_count',
+    'planner_mode',
+    'num_rooms',
+    'persistence_time_ms',
+    'segmentation_time_ms',
+    'precompute_time_ms',
 ]
 
 ALL_COLS = [c for c in INPUT_COLS if c != 'planning_time_ms'] + RESULT_COLS
@@ -159,7 +164,11 @@ class AutoBenchmarkNode(Node):
                  robot_diameter_m: float = 0.4,
                  connectivity_height: float = 0.3,
                  surface_clearance: float = 1.6,
-                 distance_field_max: int = 10):
+                 distance_field_max: int = 10,
+                 planner_mode: str = 'full',
+                 target_room_count: int = 0,
+                 num_prm_samples: int = 1000,
+                 num_landmarks: int = 16):
         super().__init__('auto_benchmark')
 
         self.service_timeout_sec = service_timeout_sec
@@ -174,6 +183,10 @@ class AutoBenchmarkNode(Node):
         self.connectivity_height = connectivity_height
         self.surface_clearance = surface_clearance
         self.distance_field_max = distance_field_max
+        self.planner_mode = planner_mode
+        self.target_room_count = target_room_count
+        self.num_prm_samples = num_prm_samples
+        self.num_landmarks = num_landmarks
 
         self.cb_group = ReentrantCallbackGroup()
 
@@ -279,8 +292,8 @@ class AutoBenchmarkNode(Node):
             print(f'  [MAP] 建图失败: {msg}')
             return False, 0.0, 0, 0
 
-    def build_topo_map(self) -> Tuple[bool, float]:
-        """构建拓扑地图。Returns: (success, build_ms)"""
+    def build_topo_map(self) -> Tuple[bool, float, dict]:
+        """构建拓扑地图。Returns: (success, build_ms, extra_info)"""
         from nav_interfaces.srv import BuildTopoMap
         request = BuildTopoMap.Request()
         request.persistence_tau = self.persistence_tau
@@ -288,21 +301,35 @@ class AutoBenchmarkNode(Node):
         request.corridor_aspect_ratio = self.corridor_aspect_ratio
         request.staircase_variance_m = self.staircase_variance_m
         request.robot_diameter_m = self.robot_diameter_m
+        request.planner_mode = self.planner_mode
+        request.target_room_count = self.target_room_count
+        request.num_prm_samples = self.num_prm_samples
+        request.num_landmarks = self.num_landmarks
 
-        print(f'  [TOPO] 构建拓扑地图 (τ={self.persistence_tau})...')
+        print(f'  [TOPO] 构建拓扑地图 (τ={self.persistence_tau}, mode={self.planner_mode})...')
         response = self._call_service(
-            self.build_topo_client, request, 'build_topo_map')
+            self.build_topo_client, request, 'build_topo_map',
+            timeout_sec=self.map_load_timeout_sec)
 
         if response and response.success:
             topo_ms = float(getattr(response, 'build_time_ms', 0.0))
-            print(f'  [TOPO] 拓扑地图构建成功: '
+            extra = {
+                'num_rooms': int(response.num_rooms),
+                'persistence_time_ms': float(getattr(response, 'persistence_time_ms', 0.0)),
+                'segmentation_time_ms': float(getattr(response, 'segmentation_time_ms', 0.0)),
+                'precompute_time_ms': float(getattr(response, 'precompute_time_ms', 0.0)),
+                'topo_memory_bytes': int(getattr(response, 'memory_usage_bytes', 0)),
+            }
+            print(f'  [TOPO] 构建成功 [{self.planner_mode}]: '
                   f'{response.num_rooms} 房间, {response.num_floors} 楼层, '
-                  f'{response.num_staircases} 楼梯间, Ttopo={topo_ms:.1f}ms')
-            return True, topo_ms
+                  f'{response.num_staircases} 楼梯间, Ttopo={topo_ms:.1f}ms '
+                  f'(PH={extra["persistence_time_ms"]:.1f} + seg={extra["segmentation_time_ms"]:.1f} '
+                  f'+ pre={extra["precompute_time_ms"]:.1f}ms)')
+            return True, topo_ms, extra
         else:
             msg = response.message if response else 'No response'
             print(f'  [TOPO] 拓扑地图构建失败: {msg}')
-            return False, 0.0
+            return False, 0.0, {}
 
     # ── Planning ───────────────────────────────────────────────────────────────
 
@@ -542,6 +569,16 @@ def main():
     parser.add_argument('--z-conn', type=float, default=0.3)
     parser.add_argument('--clearance', type=float, default=1.6)
     parser.add_argument('--dist-max', type=int, default=10)
+    parser.add_argument('--planner-mode', type=str, default='full',
+                        choices=['full', 'no_stitch', 'flat_surface',
+                                 'grid_partition', 'prm', 'alt_astar'],
+                        help='TopoNav planner mode for ablation/baselines')
+    parser.add_argument('--target-rooms', type=int, default=0,
+                        help='Target room count for grid_partition mode (0=auto)')
+    parser.add_argument('--prm-samples', type=int, default=1000,
+                        help='Number of PRM roadmap samples')
+    parser.add_argument('--num-landmarks', type=int, default=16,
+                        help='Number of ALT landmarks')
 
     parser.add_argument('--occmap-dir', type=str, default=None,
                         help='Pre-built occmap dir (from convert_all_meshes.py). '
@@ -587,6 +624,10 @@ def main():
         connectivity_height=args.z_conn,
         surface_clearance=args.clearance,
         distance_field_max=args.dist_max,
+        planner_mode=args.planner_mode,
+        target_room_count=args.target_rooms,
+        num_prm_samples=args.prm_samples,
+        num_landmarks=args.num_landmarks,
     )
     executor = MultiThreadedExecutor()
     executor.add_node(node)
@@ -685,7 +726,7 @@ def main():
                 if not ok:
                     results_by_idx[id(row)] = _failed_result(tp_ms=tp_ms)
                     continue
-                ok2, topo_ms = node.build_topo_map()
+                ok2, topo_ms, topo_extra = node.build_topo_map()
                 if not ok2:
                     results_by_idx[id(row)] = _failed_result(
                         tp_ms=tp_ms, te_ms=te_ms, mem=topo_mem)
