@@ -309,7 +309,7 @@ private:
     // ── Build alternative planners if requested ─────────────────────────────
     if (mode == "prm") {
       auto prm_t0 = std::chrono::steady_clock::now();
-      prm_planner_ = std::make_unique<PRMPlanner>(vmap_, w_up_, w_down_, w_obs_);
+      prm_planner_ = std::make_unique<PRMPlanner>(voxel_map_, w_up_, w_down_, w_obs_);
       const int n_samples = req->num_prm_samples > 0 ? req->num_prm_samples : 1000;
       prm_planner_->buildRoadmap(n_samples, 15, 0.0);
       auto prm_t1 = std::chrono::steady_clock::now();
@@ -320,7 +320,7 @@ private:
 
     if (mode == "alt_astar") {
       auto alt_t0 = std::chrono::steady_clock::now();
-      alt_planner_ = std::make_unique<ALTPlanner>(vmap_, w_up_, w_down_, w_obs_);
+      alt_planner_ = std::make_unique<ALTPlanner>(voxel_map_, w_up_, w_down_, w_obs_);
       const int n_landmarks = req->num_landmarks > 0 ? req->num_landmarks : 16;
       alt_planner_->precompute(n_landmarks);
       auto alt_t1 = std::chrono::steady_clock::now();
