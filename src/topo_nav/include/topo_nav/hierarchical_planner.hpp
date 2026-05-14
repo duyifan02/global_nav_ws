@@ -61,6 +61,13 @@ public:
   /// Enable/disable stitchPath at query time (for no_stitch ablation).
   void setUseStitch(bool v) { use_stitch_ = v; }
 
+  /// Enable PH-ALT-TG mode: use transition graph A* instead of roomAstar.
+  void setUsePHALT(bool v) { use_ph_alt_ = v; }
+
+  /// Precompute ALT landmarks on G_T via farthest-point Dijkstra.
+  /// Must be called after setTopoMap() (which builds the transition graph).
+  void precomputeTGLandmarks(int num_landmarks);
+
   /// Plan from start to goal (requires setTopoMap).
   HierarchicalPath plan(
     const std::tuple<double, double, double> & start_world,
@@ -199,6 +206,39 @@ private:
   };
   std::unordered_map<int, TransitionField> trans_field_;  ///< key = transition surf_idx
 
+
+  // ── PH-ALT-TG: Transition graph with ALT heuristic ──────────────────────
+  //
+  // Built from precomputed intra-room transfers and room boundary crossings.
+  // Nodes = portal surface indices (one per room-side of each edge).
+  // Edges = intra-room transfers (geometric path lengths) + boundary crossings.
+  // ALT landmarks provide graph-distance lower bounds for A* on G_T.
+
+  struct TGNode {
+    int surf_idx;     ///< surface graph index of this portal
+    int room_id;      ///< which room this portal is in
+    int edge_idx;     ///< which room edge this portal belongs to
+  };
+
+  int tg_num_nodes_ = 0;
+  std::vector<TGNode> tg_nodes_;
+  std::unordered_map<int, std::vector<int>> tg_room_portals_;  ///< room_id → [node_ids]
+  std::vector<std::vector<std::pair<int, double>>> tg_adj_;    ///< node_id → [(nbr, cost)]
+
+  int tg_num_landmarks_ = 0;
+  std::vector<double> tg_landmark_dist_;   ///< [l * tg_num_nodes_ + v]
+
+  bool use_ph_alt_ = false;
+
+  /// Build transition graph G_T from precomputed transfers.  Called by setTopoMap().
+  void buildTransitionGraph();
+
+  /// A* on transition graph with ALT heuristic.  Returns RoomRoute
+  /// compatible with stitchPath().
+  RoomRoute transitionGraphAstar(
+    int start_surf, int goal_surf,
+    const std::tuple<double, double, double> & start_world,
+    const std::tuple<double, double, double> & goal_world) const;
 
   // ── Dirty-array A* state (space-for-time: eliminates per-call O(n) init) ──
   //

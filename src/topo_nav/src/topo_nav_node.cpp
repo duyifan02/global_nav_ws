@@ -283,7 +283,7 @@ private:
       auto seg_t1 = std::chrono::steady_clock::now();
       segmentation_ms = std::chrono::duration<double, std::milli>(seg_t1 - seg_t0).count();
     } else {
-      // PH-based segmentation (full, no_stitch, prm, alt_astar)
+      // PH-based segmentation (full, no_stitch, prm, alt_astar, ph_alt_tg)
       auto ph_t0 = std::chrono::steady_clock::now();
       pr_ = computePersistence(*voxel_map_);
       auto ph_t1 = std::chrono::steady_clock::now();
@@ -303,6 +303,16 @@ private:
     auto pc_t0 = std::chrono::steady_clock::now();
     planner_->setTopoMap(rg_, fg_, skip_precompute);
     planner_->setUseStitch(mode != "no_stitch");
+
+    // PH-ALT-TG: build transition graph ALT landmarks
+    if (mode == "ph_alt_tg") {
+      const int n_landmarks = req->num_landmarks > 0 ? req->num_landmarks : 8;
+      planner_->precomputeTGLandmarks(n_landmarks);
+      planner_->setUsePHALT(true);
+    } else {
+      planner_->setUsePHALT(false);
+    }
+
     auto pc_t1 = std::chrono::steady_clock::now();
     precompute_ms = std::chrono::duration<double, std::milli>(pc_t1 - pc_t0).count();
 
@@ -435,7 +445,7 @@ private:
     } else if (planner_mode_ == "alt_astar" && alt_planner_) {
       hp = alt_planner_->plan(start_w, goal_w, robot_d, req->snap_to_surface);
     } else {
-      // full, no_stitch, grid_partition all use hierarchical plan()
+      // full, no_stitch, grid_partition, ph_alt_tg all use hierarchical plan()
       if (!planner_->hasTopoMap()) {
         res->success = false;
         res->message = "Topo map not built.";

@@ -571,7 +571,8 @@ def main():
     parser.add_argument('--dist-max', type=int, default=10)
     parser.add_argument('--planner-mode', type=str, default='full',
                         choices=['full', 'no_stitch', 'flat_surface',
-                                 'grid_partition', 'prm', 'alt_astar'],
+                                 'grid_partition', 'prm', 'alt_astar',
+                                 'ph_alt_tg'],
                         help='TopoNav planner mode for ablation/baselines')
     parser.add_argument('--target-rooms', type=int, default=0,
                         help='Target room count for grid_partition mode (0=auto)')

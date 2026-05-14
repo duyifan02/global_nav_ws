@@ -168,6 +168,166 @@ void HierarchicalPlanner::precomputeTransfers()
         r, room_voxels, incident.size(), incident.size(), r_ms);
     }
   }
+
+  // Build transition graph for PH-ALT-TG (always, since it's cheap)
+  buildTransitionGraph();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PH-ALT-TG: Build transition graph G_T from precomputed transfers
+//
+// Nodes: for each room edge, two portal nodes (room_i side, room_j side).
+// Edges:
+//   - Intra-room: between portals of the same room, cost = geometric path
+//     length of precomputed transfer path.
+//   - Crossing: between room_i and room_j portals of the same edge, cost =
+//     Euclidean distance between the portal voxels.
+// ─────────────────────────────────────────────────────────────────────────────
+void HierarchicalPlanner::buildTransitionGraph()
+{
+  const int E = transfer_E_;
+  if (E == 0) return;
+
+  tg_nodes_.clear();
+  tg_room_portals_.clear();
+
+  const auto & graph = vmap_->getSurfaceGraph();
+  const double res = vmap_->getResolution();
+
+  // Create two portal nodes per room edge
+  for (int eidx = 0; eidx < E; ++eidx) {
+    const auto & edge = rg_.edges[eidx];
+
+    // room_i side portal
+    TGNode ni;
+    ni.surf_idx = edge.transition_surf_i;
+    ni.room_id  = edge.room_i;
+    ni.edge_idx = eidx;
+    int nid_i = static_cast<int>(tg_nodes_.size());
+    tg_nodes_.push_back(ni);
+    tg_room_portals_[edge.room_i].push_back(nid_i);
+
+    // room_j side portal
+    TGNode nj;
+    nj.surf_idx = edge.transition_surf_j;
+    nj.room_id  = edge.room_j;
+    nj.edge_idx = eidx;
+    int nid_j = static_cast<int>(tg_nodes_.size());
+    tg_nodes_.push_back(nj);
+    tg_room_portals_[edge.room_j].push_back(nid_j);
+  }
+
+  tg_num_nodes_ = static_cast<int>(tg_nodes_.size());
+  tg_adj_.assign(tg_num_nodes_, {});
+
+  // Crossing edges: portal_i ↔ portal_j for each room edge
+  for (int eidx = 0; eidx < E; ++eidx) {
+    int ni = eidx * 2;      // room_i side
+    int nj = eidx * 2 + 1;  // room_j side
+
+    const auto & a = graph[tg_nodes_[ni].surf_idx];
+    const auto & b = graph[tg_nodes_[nj].surf_idx];
+    double dx = (b.x - a.x) * res;
+    double dy = (b.y - a.y) * res;
+    double dz = (b.z - a.z) * res;
+    double cross_cost = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+    tg_adj_[ni].emplace_back(nj, cross_cost);
+    tg_adj_[nj].emplace_back(ni, cross_cost);
+  }
+
+  // Intra-room edges: between portals of the same room
+  for (auto & [room_id, portal_nodes] : tg_room_portals_) {
+    for (size_t i = 0; i < portal_nodes.size(); ++i) {
+      for (size_t j = 0; j < portal_nodes.size(); ++j) {
+        if (i == j) continue;
+        int na = portal_nodes[i];
+        int nb = portal_nodes[j];
+        int ea = tg_nodes_[na].edge_idx;
+        int eb = tg_nodes_[nb].edge_idx;
+
+        int slot = ea * E + eb;
+        const auto & tp = transfer_path_[slot];
+        if (tp.empty()) continue;
+
+        double geo_len = computePathLength(tp);
+        if (geo_len <= 0.0) continue;
+
+        tg_adj_[na].emplace_back(nb, geo_len);
+      }
+    }
+  }
+
+  fprintf(stderr, "[PH-ALT-TG] Transition graph: %d nodes, %d room edges\n",
+          tg_num_nodes_, E);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PH-ALT-TG: Precompute ALT landmarks on the transition graph
+//
+// Farthest-point sampling for landmark selection, then L full Dijkstras
+// on G_T.  Memory: L × |V_T| × 8 bytes (typically < 50 KB).
+// ─────────────────────────────────────────────────────────────────────────────
+void HierarchicalPlanner::precomputeTGLandmarks(int num_landmarks)
+{
+  if (tg_num_nodes_ == 0) { buildTransitionGraph(); }
+  if (tg_num_nodes_ == 0) return;
+
+  const int n = tg_num_nodes_;
+  tg_num_landmarks_ = std::min(num_landmarks, n);
+  const double INF = std::numeric_limits<double>::infinity();
+
+  tg_landmark_dist_.assign(
+    static_cast<size_t>(tg_num_landmarks_) * n, INF);
+
+  std::vector<int> landmark_nodes(tg_num_landmarks_);
+  std::vector<double> min_dist(n, INF);
+  landmark_nodes[0] = 0;
+
+  auto t0 = std::chrono::steady_clock::now();
+
+  for (int l = 0; l < tg_num_landmarks_; ++l) {
+    int src = landmark_nodes[l];
+    const size_t offset = static_cast<size_t>(l) * n;
+
+    using QE = std::pair<double, int>;
+    std::priority_queue<QE, std::vector<QE>, std::greater<QE>> pq;
+    tg_landmark_dist_[offset + src] = 0.0;
+    pq.push({0.0, src});
+
+    while (!pq.empty()) {
+      auto [d, u] = pq.top(); pq.pop();
+      if (d > tg_landmark_dist_[offset + u]) continue;
+
+      for (auto & [nbr, cost] : tg_adj_[u]) {
+        double nd = d + cost;
+        if (nd < tg_landmark_dist_[offset + nbr]) {
+          tg_landmark_dist_[offset + nbr] = nd;
+          pq.push({nd, nbr});
+        }
+      }
+    }
+
+    // Farthest-point selection for next landmark
+    if (l + 1 < tg_num_landmarks_) {
+      int best = -1;
+      double best_val = -1.0;
+      for (int v = 0; v < n; ++v) {
+        min_dist[v] = std::min(min_dist[v], tg_landmark_dist_[offset + v]);
+        if (min_dist[v] > best_val && min_dist[v] < 1e18) {
+          best_val = min_dist[v];
+          best = v;
+        }
+      }
+      landmark_nodes[l + 1] = (best >= 0) ? best : ((l + 1) % n);
+    }
+  }
+
+  auto t1 = std::chrono::steady_clock::now();
+  double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+  fprintf(stderr,
+    "[PH-ALT-TG] %d landmarks on %d-node TG, %.1f ms\n",
+    tg_num_landmarks_, n, ms);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -896,6 +1056,190 @@ std::vector<int> HierarchicalPlanner::stitchPath(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PH-ALT-TG: A* on transition graph with ALT heuristic
+//
+// Searches over portal nodes (transition voxels) instead of rooms.
+// Uses triangle-inequality landmark lower bounds precomputed on G_T.
+// Output: RoomRoute compatible with stitchPath().
+// ─────────────────────────────────────────────────────────────────────────────
+HierarchicalPlanner::RoomRoute HierarchicalPlanner::transitionGraphAstar(
+  int start_surf, int goal_surf,
+  const std::tuple<double, double, double> & start_world,
+  const std::tuple<double, double, double> & goal_world) const
+{
+  RoomRoute route;
+  const int n = tg_num_nodes_;
+  if (n == 0) return route;
+
+  const int start_room = rg_.room_labels[start_surf];
+  const int goal_room  = rg_.room_labels[goal_surf];
+
+  if (start_room == goal_room) {
+    route.rooms = {start_room};
+    return route;
+  }
+
+  const auto & graph = vmap_->getSurfaceGraph();
+  const double res   = vmap_->getResolution();
+  const double INF   = std::numeric_limits<double>::infinity();
+
+  const auto [sx, sy, sz]       = start_world;
+  const auto [gx_w, gy_w, gz_w] = goal_world;
+
+  // Virtual nodes: VSTART = n, VGOAL = n+1
+  const int VSTART      = n;
+  const int VGOAL       = n + 1;
+  const int total_nodes = n + 2;
+
+  // Precompute goal portal connections and landmark-to-goal distances
+  auto goal_portals_it = tg_room_portals_.find(goal_room);
+  // goal_cost[node_id] = Euclidean from portal to goal_surf
+  std::unordered_map<int, double> goal_cost;
+
+  // landmark_to_goal[l] = min over goal portals of (d_T(L, q) + geo(q, goal))
+  std::vector<double> landmark_to_goal(tg_num_landmarks_, INF);
+
+  if (goal_portals_it != tg_room_portals_.end()) {
+    for (int nid : goal_portals_it->second) {
+      const auto & p = graph[tg_nodes_[nid].surf_idx];
+      double dx = (p.x - graph[goal_surf].x) * res;
+      double dy = (p.y - graph[goal_surf].y) * res;
+      double dz = (p.z - graph[goal_surf].z) * res;
+      double gc = std::sqrt(dx * dx + dy * dy + dz * dz);
+      goal_cost[nid] = gc;
+
+      for (int l = 0; l < tg_num_landmarks_; ++l) {
+        double d_lq = tg_landmark_dist_[l * n + nid];
+        landmark_to_goal[l] = std::min(landmark_to_goal[l], d_lq + gc);
+      }
+    }
+  }
+
+  // ALT heuristic on transition graph
+  auto h_tg = [&](int node_id) -> double {
+    if (node_id >= n) return 0.0;
+    double hval = 0.0;
+    for (int l = 0; l < tg_num_landmarks_; ++l) {
+      double d_lv = tg_landmark_dist_[l * n + node_id];
+      double d_lg = landmark_to_goal[l];
+      hval = std::max(hval, std::abs(d_lg - d_lv));
+    }
+    // Also use Euclidean as lower bound (max of admissible heuristics)
+    const auto & pv = graph[tg_nodes_[node_id].surf_idx];
+    double dx = (pv.x - graph[goal_surf].x) * res;
+    double dy = (pv.y - graph[goal_surf].y) * res;
+    double dz = (pv.z - graph[goal_surf].z) * res;
+    double h_eucl = std::sqrt(dx * dx + dy * dy + dz * dz);
+    return std::max(hval, h_eucl);
+  };
+
+  // A* state
+  std::vector<double> g(total_nodes, INF);
+  std::vector<int>    came_from(total_nodes, -2);
+  std::vector<bool>   closed(total_nodes, false);
+
+  using QE = std::pair<double, int>;
+  std::priority_queue<QE, std::vector<QE>, std::greater<QE>> open;
+
+  // Initialize: connect start to portals in start_room
+  g[VSTART] = 0.0;
+  came_from[VSTART] = -1;
+
+  auto start_portals_it = tg_room_portals_.find(start_room);
+  if (start_portals_it != tg_room_portals_.end()) {
+    for (int nid : start_portals_it->second) {
+      const auto & pp = graph[tg_nodes_[nid].surf_idx];
+      const auto & ps = graph[start_surf];
+      double dx = (pp.x - ps.x) * res;
+      double dy = (pp.y - ps.y) * res;
+      double dz = (pp.z - ps.z) * res;
+      double cost = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+      if (cost < g[nid]) {
+        g[nid] = cost;
+        came_from[nid] = VSTART;
+        open.emplace(cost + h_tg(nid), nid);
+      }
+    }
+  }
+
+  // A* main loop
+  while (!open.empty()) {
+    auto [_, cur] = open.top(); open.pop();
+    if (closed[cur]) continue;
+    closed[cur] = true;
+
+    if (cur == VGOAL) break;
+
+    // If this is a portal in goal_room, try connecting to VGOAL
+    if (cur < n && tg_nodes_[cur].room_id == goal_room) {
+      auto git = goal_cost.find(cur);
+      if (git != goal_cost.end()) {
+        double new_g = g[cur] + git->second;
+        if (new_g < g[VGOAL]) {
+          g[VGOAL] = new_g;
+          came_from[VGOAL] = cur;
+          open.emplace(new_g, VGOAL);
+        }
+      }
+    }
+
+    if (cur >= n) continue;  // virtual nodes have no TG adjacency
+
+    // Expand transition graph edges
+    for (auto & [nbr, cost] : tg_adj_[cur]) {
+      if (closed[nbr]) continue;
+      double new_g = g[cur] + cost;
+      if (new_g < g[nbr]) {
+        g[nbr] = new_g;
+        came_from[nbr] = cur;
+        open.emplace(new_g + h_tg(nbr), nbr);
+      }
+    }
+  }
+
+  if (g[VGOAL] >= INF) return route;
+
+  // Reconstruct portal sequence (skip virtual nodes)
+  std::vector<int> portal_seq;
+  int cur = came_from[VGOAL];
+  while (cur >= 0 && cur != VSTART && cur < n) {
+    portal_seq.push_back(cur);
+    cur = came_from[cur];
+  }
+  std::reverse(portal_seq.begin(), portal_seq.end());
+
+  if (portal_seq.empty()) return route;
+
+  // Convert portal sequence to RoomRoute
+  // Track room transitions: when room changes between consecutive portals,
+  // that's a boundary crossing and we record the edge.
+  route.rooms.push_back(start_room);
+
+  for (size_t i = 0; i < portal_seq.size(); ++i) {
+    int nid  = portal_seq[i];
+    int room = tg_nodes_[nid].room_id;
+    if (room != route.rooms.back()) {
+      route.rooms.push_back(room);
+      route.edges.push_back(tg_nodes_[nid].edge_idx);
+    }
+  }
+
+  // Verify goal_room is the last room
+  if (route.rooms.back() != goal_room) {
+    fprintf(stderr, "[TG-Astar] WARNING: last room %d != goal_room %d\n",
+            route.rooms.back(), goal_room);
+  }
+
+  fprintf(stderr, "[TG-Astar] route(%zu rooms, %zu edges): ",
+          route.rooms.size(), route.edges.size());
+  for (int ri : route.rooms) fprintf(stderr, "%d ", ri);
+  fprintf(stderr, "| g=%.3f\n", g[VGOAL]);
+
+  return route;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Main entry: three-level hierarchical planning
 // ─────────────────────────────────────────────────────────────────────────────
 HierarchicalPath HierarchicalPlanner::plan(
@@ -950,9 +1294,10 @@ HierarchicalPath HierarchicalPlanner::plan(
 
   // ── Step 2: Room-level routing ────────────────────────────────────────────
   auto room_t0 = std::chrono::steady_clock::now();
-  const RoomRoute route = roomAstar(
-    start_room, goal_room, start_surf, goal_surf,
-    start_world, goal_world, floor_seq, robot_diameter_m);
+  const RoomRoute route = use_ph_alt_
+    ? transitionGraphAstar(start_surf, goal_surf, start_world, goal_world)
+    : roomAstar(start_room, goal_room, start_surf, goal_surf,
+                start_world, goal_world, floor_seq, robot_diameter_m);
   const std::vector<int> & room_seq = route.rooms;
   auto room_t1 = std::chrono::steady_clock::now();
   result.room_planning_ms =
