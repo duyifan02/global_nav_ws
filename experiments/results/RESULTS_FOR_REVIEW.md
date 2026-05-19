@@ -398,22 +398,24 @@ Root cause: at τ=5, fewer rooms → fewer portal voxels between adjacent region
 
 **τ=5 achieves 7.2x vs ALT at 0.05m** — scaling advantage amplified at finer resolution.
 
-### 2.7 Precompute Cost and Amortized Analysis (100-scene median)
+### 2.7 Precompute Cost, Memory, and Amortized Analysis (100-scene median)
 
-| Method | Precompute (ms) | Median Query (ms) | Break-even vs JPS |
-|--------|----------------|------------------|------------------|
-| JPS / flat_surface | 0 | 0.292–0.302 | 0 queries |
-| ALT A* | **41.2** | 0.095 | ~185 queries |
-| **PH-ALT-TG τ=5** | **26.6** | **0.044** | **~97 queries** |
-| PH-ALT-TG τ=3 | 50.3 | 0.048 | ~197 queries |
-| full (HPA*) τ=5 | 32.1 | 0.045 | ~119 queries |
+| Method | Precompute (ms) | Median Query (ms) | Memory (MB) | Break-even vs JPS |
+|--------|----------------|------------------|------------|------------------|
+| JPS / flat_surface | 0 | 0.292–0.302 | **8.4** | 0 queries |
+| ALT A* | **41.2** | 0.095 | 15.4 | ~185 queries |
+| **PH-ALT-TG τ=5** | **26.6** | **0.044** | 15.4 | **~97 queries** |
+| PH-ALT-TG τ=3 | 50.3 | 0.048 | 15.4 | ~197 queries |
+| full (HPA*) τ=5 | 32.1 | 0.045 | 15.4 | ~119 queries |
 
 **PH-ALT-TG τ=5 is Pareto-dominant over ALT A*** at the 100-scene median:
-- Precompute: **26.6ms vs 41.2ms** (35% cheaper — TG only runs Dijkstra from portal nodes within each room; ALT runs 16 full-graph Dijkstras)
+- Precompute: **26.6ms vs 41.2ms** (35% cheaper — TG only runs Dijkstra from portal nodes within each room; ALT runs 16 full-graph Dijkstras over all voxels)
 - Query: **0.044ms vs 0.095ms** (2.2x faster)
-- Result: **TG5 is always better than ALT — cheaper precompute AND faster queries**
+- Memory: **equal** (both ~15.4MB at 0.1m, median scene)
+- **TG5 dominates ALT on both speed metrics simultaneously**
 
 Break-even vs JPS (no precompute): TG5 pays back after ~97 queries per scene.
+*Memory note*: JPS stores only voxel grid (8.4MB); ALT/TG store voxel grid + landmark table / transfer cache (~15.4MB). Max scene: 17MB.
 
 ---
 
