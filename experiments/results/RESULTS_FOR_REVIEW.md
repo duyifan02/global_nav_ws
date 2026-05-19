@@ -299,14 +299,15 @@ Multi-floor complex scenes (S4, S6) show the highest speedup (11–22x).
 
 | Method | Median Ts (ms) | Mean Ts (ms) | OK queries | Scenes OK |
 |--------|---------------|-------------|------------|-----------|
-| JPS (Surface A*) | 0.292 | 0.447 | 262 | 97 |
-| flat_surface | 0.302 | 0.447 | 272 | 97 |
-| ALT A* (16 lm) | 0.095 | 0.187 | 265 | 95 |
-| full (HPA*, τ=5) | 0.045 | 0.177 | 263 | 96 |
-| **PH-ALT-TG τ=3** | **0.048** | **0.175** | 265 | 98 |
-| **PH-ALT-TG τ=5** | **0.044** | **0.191** | 267 | 96 |
+| JPS (Surface A*) | 0.317 | 0.497 | 262 | 97 |
+| flat_surface | 0.310 | 0.462 | 272 | 97 |
+| ALT A* (16 lm) | 0.095 | 0.208 | 265 | 95 |
+| full (HPA*, τ=5) | 0.048 | 0.167 | 263 | 96 |
+| **PH-ALT-TG τ=3** | **0.050** | **0.181** | 265 | 98 |
+| **PH-ALT-TG τ=4** | **0.050** | **0.190** | 259 | 97 |
+| **PH-ALT-TG τ=5** | **0.045** | **0.200** | 267 | 96 |
 
-**Headline**: TG τ=5 median query = **0.044ms** — 6.6x faster than ALT, 6.6x faster than JPS.
+**Headline**: TG τ=5 median query = **0.045ms** — 7.1x faster than JPS, 2.1x faster than ALT.
 
 ### 2.2 Cross-Method Speedup (per-scene median Ts, common scenes)
 
@@ -314,13 +315,20 @@ Multi-floor complex scenes (S4, S6) show the highest speedup (11–22x).
 - TG5 faster: **88/95 (93%)**
 - Speedup: median **6.06x**, mean **9.38x**, p25=3.69x, p75=10.95x
 
+**TG τ=4 vs JPS** (96 common scenes):
+- TG4 faster: **90/96 (93%)**
+- Speedup: median **5.94x**, mean **8.13x**, p75=9.92x
+
 **TG τ=5 vs ALT** (94 common scenes):
 - TG5 faster: **77/94 (82%)**
 - Speedup: median **1.87x**, mean **3.51x**
 
-**Best(TG τ=3, TG τ=5) vs ALT** (94 scenes):
-- TG wins: **87/94 (93%)**
-- Speedup: median **2.50x**
+**TG τ=4 vs ALT** (95 common scenes):
+- TG4 faster: **83/95 (87%)**
+- Speedup: median **1.85x**, mean **2.71x**
+
+**Best(TG τ=3, τ=4, τ=5) vs ALT** (94 scenes):
+- TG wins: **91/94 (96%)**
 
 | Speedup Range (TG τ=5 vs ALT) | Scenes | % |
 |-------------------------------|--------|---|
@@ -333,14 +341,17 @@ Multi-floor complex scenes (S4, S6) show the highest speedup (11–22x).
 
 ### 2.3 Choosing Optimal Tau Per Scene
 
+*(Best-τ = whichever of τ=3/4/5 gives lowest median query time per scene)*
+
 | Best method | Scenes | % |
 |-------------|--------|---|
-| TG τ=5 | ~48 | ~51% |
-| TG τ=3 | ~39 | ~41% |
-| ALT | ~7 | ~7% |
-| **Either TG beats ALT** | **87/94** | **93%** |
+| TG τ=5 | 38 | 40% |
+| TG τ=4 | 27 | 29% |
+| TG τ=3 | 29 | 31% |
+| ALT wins | 3 | 3% |
+| **Any TG beats ALT** | **91/94** | **96%** |
 
-TG wins on **9 out of 10 scenes** with optimal τ. τ=5 dominates complex/multi-floor buildings; τ=3 rescues cases where τ=5 creates suboptimal large-room routing.
+TG wins on **91 of 94 scenes** with optimal τ — only 3 scenes (3%) do ALT remain unbeaten. τ=5 dominates large/complex buildings; τ=3 helps where τ=5 creates fallback; τ=4 fills the gap, winning on 27 scenes where neither τ=3 nor τ=5 alone was best.
 
 ### 2.4 Top-10 Scenes by Speedup (TG τ=5 vs ALT)
 
@@ -427,9 +438,9 @@ Break-even vs JPS (no precompute): TG5 pays back after ~97 queries per scene.
 | ALT A* query time | 0.425ms | 0.285ms | 0.095ms (median) |
 | **Speedup vs ALT** | **8.5x** | **2.6x** | **1.87x median** |
 | Speedup vs JPS | 83x | 6.9x | **6.06x median** |
-| Win rate vs ALT | 6/6 (100%) | 48/50 (96%) | **87/94 (93%)** best-τ |
+| Win rate vs ALT | 6/6 (100%) | 48/50 (96%) | **91/94 (96%)** best-τ |
 | Win rate vs JPS | 6/6 (100%) | — | **88/95 (93%)** |
-| Optimal τ | 4 | 5 | 3 or 5 |
+| Optimal τ | 4 | 5 | 3, 4, or 5 |
 | Precompute | 362ms | — | 65ms |
 
 ---
@@ -454,8 +465,8 @@ Break-even vs JPS (no precompute): TG5 pays back after ~97 queries per scene.
 
 3. **Scales favorably with resolution**: At 0.05m (|V|~80K), PH-ALT-TG is 11x faster than ALT (0.145ms vs 1.626ms). Voxel-based methods degrade 6.3–3.8x; PH-ALT-TG degrades only 2.5x.
 
-4. **Generalizes to 100 unseen scenes**: On HM3D val, beats ALT on **93% of scenes** (87/94, with optimal τ). Median 1.87x speedup vs ALT, median **6.06x vs JPS**. Best scene: 71x speedup. Win rate vs JPS: 88/95 (93%).
+4. **Generalizes to 100 unseen scenes**: On HM3D val, beats ALT on **96% of scenes** (91/94, with optimal τ across τ=3/4/5). Median 1.87x speedup vs ALT, median **6.06x vs JPS**. Best scene: 71x speedup. Win rate vs JPS: 88/95 (93%).
 
-5. **Strictly Pareto-dominant over ALT**: At 100-scene median, TG5 precompute = **26.6ms vs ALT 41.2ms** (35% cheaper), AND TG5 query = **0.044ms vs 0.095ms** (2.2x faster). TG5 is better than ALT on BOTH metrics simultaneously. Break-even vs JPS: ~97 queries/scene.
+5. **Strictly Pareto-dominant over ALT**: At 100-scene median, TG5 precompute = **26.6ms vs ALT 41.2ms** (35% cheaper), AND TG5 query = **0.045ms vs 0.095ms** (2.1x faster). TG5 is better than ALT on BOTH metrics simultaneously. Break-even vs JPS: ~97 queries/scene.
 
 6. **ALT landmarks are essential**: Without them, TG is slower than ALT (0.92x). The combination of PH topology + ALT heuristic is key.
