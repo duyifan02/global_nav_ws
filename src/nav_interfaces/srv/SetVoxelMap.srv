@@ -1,6 +1,6 @@
 float64 resolution
 geometry_msgs/Point[] occupied
-geometry_msgs/Point seed_point  # BFS建图种子点（可行走区域的起始点）
+geometry_msgs/Point[] seed_points  # BFS建图种子点列表（start+goal双种子确保连通性）
 ---
 bool success
 string message

@@ -25,7 +25,7 @@ VoxelMap::~VoxelMap()
 
 bool VoxelMap::updateFromPoints(const std::vector<std::tuple<float, float, float>>& occupied_voxels,
                                 double resolution,
-                                const std::tuple<float, float, float>* seed_point)
+                                const std::vector<std::tuple<float, float, float>>& seed_points)
 {
     if (occupied_voxels.empty() || resolution <= 0.0) {
         return false;
@@ -89,7 +89,7 @@ bool VoxelMap::updateFromPoints(const std::vector<std::tuple<float, float, float
     }
 
     auto t_build_start = std::chrono::high_resolution_clock::now();
-    buildReachableMap(seed_point);
+    buildReachableMap(seed_points);
     auto t_build_end = std::chrono::high_resolution_clock::now();
     traversability_time_ms_ = std::chrono::duration<double, std::milli>(t_build_end - t_build_start).count();
 
@@ -182,143 +182,127 @@ std::tuple<double, double, double> VoxelMap::gridToWorld(int ix, int iy, int iz)
     return std::make_tuple(x, y, z);
 }
 
-void VoxelMap::buildReachableMap(const std::tuple<float, float, float>* seed_point)
+// 在种子点附近搜索最近的可行走地面体素，返回 grid 坐标；未找到返回 {-1,-1,-1}
+// 优化：先做 XY 平面的 2D 搜索（半径 search_r_xy），每个 XY 位置只扫描一段 z 范围
+// 一旦找到距离 ≤ early_exit_r 的体素立即返回，避免完整的立方体搜索
+static std::tuple<int,int,int> findNearestWalkableVoxel(
+    int seed_ix, int seed_iy, int seed_iz,
+    int nx, int ny, int nz,
+    int clearance_cells, int max_iz,
+    int search_r_xy, int search_r_z,
+    double early_exit_r_sq,
+    const std::function<bool(int,int,int)>& isOccupied,
+    const std::function<bool(int,int,int)>& isValid)
+{
+    double min_dist_sq = std::numeric_limits<double>::max();
+    std::tuple<int,int,int> best = {-1,-1,-1};
+
+    for (int dx = -search_r_xy; dx <= search_r_xy; ++dx) {
+        for (int dy = -search_r_xy; dy <= search_r_xy; ++dy) {
+            int ix = seed_ix + dx;
+            int iy = seed_iy + dy;
+            if (ix < 0 || ix >= nx || iy < 0 || iy >= ny) continue;
+            double dxy2 = dx*dx + dy*dy;
+            if (dxy2 > search_r_xy * search_r_xy) continue; // 圆形范围
+            if (dxy2 >= min_dist_sq) continue; // 剪枝：XY 距离已超过最优
+            int z_lo = std::max(0,      seed_iz - search_r_z);
+            int z_hi = std::min(max_iz, seed_iz + search_r_z);
+            for (int iz = z_lo; iz <= z_hi; ++iz) {
+                if (!isOccupied(ix, iy, iz)) continue;
+                bool has_clearance = true;
+                for (int cz = 1; cz <= clearance_cells; ++cz) {
+                    if (isOccupied(ix, iy, iz + cz)) { has_clearance = false; break; }
+                }
+                if (!has_clearance) continue;
+                int dz = iz - seed_iz;
+                double d2 = dxy2 + dz*dz;
+                if (d2 < min_dist_sq) {
+                    min_dist_sq = d2;
+                    best = {ix, iy, iz};
+                    if (d2 <= early_exit_r_sq) return best; // 足够近，直接返回
+                }
+            }
+        }
+    }
+    return best;
+}
+
+void VoxelMap::buildReachableMap(const std::vector<std::tuple<float, float, float>>& seed_points)
 {
     auto [nx, ny, nz] = grid_size_;
-    if (nx <= 0 || ny <= 0 || nz <= 0) {
-        return;
-    }
-    
+    if (nx <= 0 || ny <= 0 || nz <= 0) return;
     size_t total_size = voxel_array_.size();
-    if (total_size == 0) {
-        return;
-    }
-    
+    if (total_size == 0) return;
+
     valid_surface_voxels_.clear();
-    
     std::vector<uint8_t> visited_ground(total_size, 0);
-    
+
     int clearance_cells = static_cast<int>(std::ceil(surface_clearance_height_ / resolution_));
     int max_iz = std::max(0, nz - clearance_cells);
-    
-    double min_dist_sq = std::numeric_limits<double>::max();
-    std::tuple<int, int, int> best_seed = {-1, -1, -1};
 
-    // 如果提供了种子点，优先使用
-    if (seed_point != nullptr) {
-        auto [sx, sy, sz] = *seed_point;
-        auto [seed_ix, seed_iy, seed_iz] = worldToGrid(sx, sy, sz);
-        
-        // 在种子点附近搜索有效的地面体素
-        int search_r = static_cast<int>(3.0 / resolution_);
-        
-        for (int dx = -search_r; dx <= search_r; ++dx) {
-            for (int dy = -search_r; dy <= search_r; ++dy) {
-                for (int dz = -search_r; dz <= search_r; ++dz) {
-                    int ix = seed_ix + dx;
-                    int iy = seed_iy + dy;
-                    int iz = seed_iz + dz;
-                    
-                    if (!isValidIdx(ix, iy, iz) || iz >= max_iz) continue;
-                    if (!isOccupiedIdx(ix, iy, iz)) continue;
-                    
-                    bool has_clearance = true;
-                    for (int check_z = 1; check_z <= clearance_cells; ++check_z) {
-                        if (isOccupiedIdx(ix, iy, iz + check_z)) {
-                            has_clearance = false;
-                            break;
+    // 搜索参数：XY 半径 1.5m，Z 半径 2m，early-exit 0.3m
+    int search_r_xy  = static_cast<int>(std::ceil(1.5 / resolution_));
+    int search_r_z   = static_cast<int>(std::ceil(2.0 / resolution_));
+    double early_r_sq = (0.3 / resolution_) * (0.3 / resolution_);
+
+    auto isOcc   = [this](int ix, int iy, int iz){ return isOccupiedIdx(ix, iy, iz); };
+    auto isValid = [this](int ix, int iy, int iz){ return isValidIdx(ix, iy, iz); };
+
+    std::queue<std::tuple<int,int,int>> q;
+
+    // ── 1. 逐个处理用户提供的种子点 ──────────────────────────────────────────
+    for (const auto& sp : seed_points) {
+        auto [sx, sy, sz] = sp;
+        auto [six, siy, siz] = worldToGrid(sx, sy, sz);
+        auto v = findNearestWalkableVoxel(
+            six, siy, siz, nx, ny, nz,
+            clearance_cells, max_iz,
+            search_r_xy, search_r_z, early_r_sq,
+            isOcc, isValid);
+        if (std::get<0>(v) == -1) continue;
+        size_t idx = index3DTo1D(std::get<0>(v), std::get<1>(v), std::get<2>(v));
+        if (visited_ground[idx]) continue; // 已由前一个种子覆盖
+        visited_ground[idx] = true;
+        auto [vx, vy, vz] = v;
+        valid_surface_voxels_.emplace_back(vx, vy, vz + 1);
+        q.push(v);
+    }
+
+    // ── 2. 若没有任何种子成功，退化到原点附近搜索，再退化到全图搜索 ────────
+    if (q.empty()) {
+        // 2a. 原点附近 (5m)
+        auto [oix, oiy, oiz] = worldToGrid(0.0, 0.0, 0.0);
+        int r5 = static_cast<int>(5.0 / resolution_);
+        auto v = findNearestWalkableVoxel(
+            oix, oiy, oiz, nx, ny, nz,
+            clearance_cells, max_iz,
+            r5, nz, 0.0, isOcc, isValid);
+
+        // 2b. 全图搜索（最终兜底）
+        if (std::get<0>(v) == -1) {
+            for (int ix = 0; ix < nx && std::get<0>(v) == -1; ++ix) {
+                for (int iy = 0; iy < ny && std::get<0>(v) == -1; ++iy) {
+                    for (int iz = 0; iz < max_iz; ++iz) {
+                        if (!isOccupiedIdx(ix, iy, iz)) continue;
+                        bool ok = true;
+                        for (int cz = 1; cz <= clearance_cells; ++cz) {
+                            if (isOccupiedIdx(ix, iy, iz + cz)) { ok = false; break; }
                         }
-                    }
-                    if (!has_clearance) continue;
-                    
-                    double d2 = dx*dx + dy*dy + dz*dz;
-                    if (d2 < min_dist_sq) {
-                        min_dist_sq = d2;
-                        best_seed = {ix, iy, iz};
+                        if (ok) { v = {ix, iy, iz}; break; }
                     }
                 }
             }
         }
-    }
-    
-    // 如果没有种子点或种子点附近找不到，从原点附近搜索
-    if (std::get<0>(best_seed) == -1) {
-        auto origin_grid = worldToGrid(0.0, 0.0, 0.0);
-        int start_ix = std::get<0>(origin_grid);
-        int start_iy = std::get<1>(origin_grid);
-        
-        int search_r = static_cast<int>(5.0 / resolution_);
-        
-        for (int dx = -search_r; dx <= search_r; ++dx) {
-            for (int dy = -search_r; dy <= search_r; ++dy) {
-                int ix = start_ix + dx;
-                int iy = start_iy + dy;
-                
-                if (ix < 0 || ix >= nx || iy < 0 || iy >= ny) continue;
-                
-                for (int iz = 0; iz < max_iz; ++iz) {
-                    if (!isOccupiedIdx(ix, iy, iz)) continue;
-                    
-                    bool has_clearance = true;
-                    for (int check_z = 1; check_z <= clearance_cells; ++check_z) {
-                        if (isOccupiedIdx(ix, iy, iz + check_z)) {
-                            has_clearance = false;
-                            break;
-                        }
-                    }
-                    if (!has_clearance) continue;
 
-                    auto [wx, wy, wz] = gridToWorld(ix, iy, iz);
-                    double d2 = wx*wx + wy*wy + wz*wz;
-                    
-                    if (d2 < min_dist_sq) {
-                        min_dist_sq = d2;
-                        best_seed = {ix, iy, iz};
-                    }
-                }
-            }
-        }
-    }
-    
-    // 如果原点附近找不到，全图搜索
-    if (std::get<0>(best_seed) == -1) {
-        for (int ix = 0; ix < nx; ++ix) {
-            for (int iy = 0; iy < ny; ++iy) {
-                for (int iz = 0; iz < max_iz; ++iz) {
-                    if (!isOccupiedIdx(ix, iy, iz)) continue;
-                    
-                    bool has_clearance = true;
-                    for (int check_z = 1; check_z <= clearance_cells; ++check_z) {
-                        if (isOccupiedIdx(ix, iy, iz + check_z)) {
-                            has_clearance = false;
-                            break;
-                        }
-                    }
-                    if (!has_clearance) continue;
-
-                    best_seed = {ix, iy, iz};
-                    goto found_seed;
-                }
-            }
-        }
-        found_seed:;
-    }
-    
-    if (std::get<0>(best_seed) == -1) {
-        return;
+        if (std::get<0>(v) == -1) return; // 地图中没有可行走区域
+        size_t idx = index3DTo1D(std::get<0>(v), std::get<1>(v), std::get<2>(v));
+        visited_ground[idx] = true;
+        auto [vx, vy, vz] = v;
+        valid_surface_voxels_.emplace_back(vx, vy, vz + 1);
+        q.push(v);
     }
 
-    std::queue<std::tuple<int, int, int>> q;
-    
-    q.push(best_seed);
-    size_t seed_idx = index3DTo1D(std::get<0>(best_seed), std::get<1>(best_seed), std::get<2>(best_seed));
-    visited_ground[seed_idx] = true;
-    
-    {
-        auto [sx, sy, sz] = best_seed;
-        valid_surface_voxels_.emplace_back(sx, sy, sz + 1);
-    }
-    
+    // ── 3. BFS 扩展 ──────────────────────────────────────────────────────────
     int z_step = static_cast<int>(std::ceil(connectivity_height_threshold_ / resolution_));
     // 论文公式(3): Z连通邻域要求 ‖Δc_xy‖₁ = 1，即严格4连通（不含对角线）
     constexpr int dirs4[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
@@ -328,31 +312,24 @@ void VoxelMap::buildReachableMap(const std::tuple<float, float, float>* seed_poi
         q.pop();
 
         for (int di = 0; di < 4; ++di) {
-            int dx = dirs4[di][0];
-            int dy = dirs4[di][1];
-
-            int nx_ix = cx + dx;
-            int ny_iy = cy + dy;
-
+            int nx_ix = cx + dirs4[di][0];
+            int ny_iy = cy + dirs4[di][1];
             if (nx_ix < 0 || nx_ix >= nx || ny_iy < 0 || ny_iy >= ny) continue;
 
             int min_z = std::max(0, cz - z_step);
-            int max_z = std::min(std::max(0, nz - clearance_cells), cz + z_step);
+            int max_z = std::min(max_iz, cz + z_step);
 
             for (int nz_iz = min_z; nz_iz <= max_z; ++nz_iz) {
                 if (!isOccupiedIdx(nx_ix, ny_iy, nz_iz)) continue;
-
                 size_t n_idx = index3DTo1D(nx_ix, ny_iy, nz_iz);
                 if (visited_ground[n_idx]) continue;
-
                 visited_ground[n_idx] = true;
 
                 bool has_clearance = true;
                 for (int check_z = 1; check_z <= clearance_cells; ++check_z) {
                     int check_iz = nz_iz + check_z;
                     if (check_iz >= nz || isOccupiedIdx(nx_ix, ny_iy, check_iz)) {
-                        has_clearance = false;
-                        break;
+                        has_clearance = false; break;
                     }
                 }
                 if (has_clearance) {
@@ -362,16 +339,13 @@ void VoxelMap::buildReachableMap(const std::tuple<float, float, float>* seed_poi
             }
         }
     }
-    
-    surface_array_.clear();
-    surface_array_.resize(total_size, 0);
-    
+
+    // ── 4. 构建 surface_array_（O(1) 查询）────────────────────────────────────
+    surface_array_.assign(total_size, 0);
     for (const auto& voxel : valid_surface_voxels_) {
         auto [sx, sy, sz] = voxel;
-        if (isValidIdx(sx, sy, sz)) {
-            size_t idx = index3DTo1D(sx, sy, sz);
-            surface_array_[idx] = 1;
-        }
+        if (isValidIdx(sx, sy, sz))
+            surface_array_[index3DTo1D(sx, sy, sz)] = 1;
     }
 }
 

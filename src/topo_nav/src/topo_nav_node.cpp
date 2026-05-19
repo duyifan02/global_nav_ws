@@ -137,22 +137,19 @@ private:
         static_cast<float>(p.z));
     }
 
-    const std::tuple<float, float, float> * seed_ptr = nullptr;
-    std::tuple<float, float, float> seed;
-    if (req->seed_point.x != 0.0 || req->seed_point.y != 0.0 ||
-        req->seed_point.z != 0.0)
-    {
-      seed = {static_cast<float>(req->seed_point.x),
-              static_cast<float>(req->seed_point.y),
-              static_cast<float>(req->seed_point.z)};
-      seed_ptr = &seed;
+    std::vector<std::tuple<float, float, float>> seeds;
+    seeds.reserve(req->seed_points.size());
+    for (const auto& p : req->seed_points) {
+      seeds.emplace_back(static_cast<float>(p.x),
+                         static_cast<float>(p.y),
+                         static_cast<float>(p.z));
     }
 
     voxel_map_ = std::make_shared<jps_planner_3d::VoxelMap>();
     configureMap();
 
     const bool ok = voxel_map_->updateFromPoints(
-      occupied, req->resolution, seed_ptr);
+      occupied, req->resolution, seeds);
 
     rebuildPlanner();  // new planner owns new voxel_map_
 
@@ -195,20 +192,17 @@ private:
     const double Tp =
       std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-    const std::tuple<float, float, float> * seed_ptr = nullptr;
-    std::tuple<float, float, float> seed;
-    if (req->seed_point.x != 0.0 || req->seed_point.y != 0.0 ||
-        req->seed_point.z != 0.0)
-    {
-      seed = {static_cast<float>(req->seed_point.x),
-              static_cast<float>(req->seed_point.y),
-              static_cast<float>(req->seed_point.z)};
-      seed_ptr = &seed;
+    std::vector<std::tuple<float, float, float>> seeds_pcd;
+    seeds_pcd.reserve(req->seed_points.size());
+    for (const auto& p : req->seed_points) {
+      seeds_pcd.emplace_back(static_cast<float>(p.x),
+                             static_cast<float>(p.y),
+                             static_cast<float>(p.z));
     }
 
     voxel_map_ = std::make_shared<jps_planner_3d::VoxelMap>();
     configureMap();
-    voxel_map_->updateFromPoints(pcd_result.occupied_voxels, req->resolution, seed_ptr);
+    voxel_map_->updateFromPoints(pcd_result.occupied_voxels, req->resolution, seeds_pcd);
     rebuildPlanner();
 
     res->success               = true;

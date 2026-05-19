@@ -260,22 +260,24 @@ class AutoBenchmarkNode(Node):
 
     # ── Map loading ────────────────────────────────────────────────────────────
 
-    def set_voxel_map(self, voxel_centers: np.ndarray, seed: np.ndarray,
+    def set_voxel_map(self, voxel_centers: np.ndarray, seeds: list,
                       resolution: float) -> Tuple[bool, float, int, float]:
-        """发送体素地图到规划器节点。
+        """发送体素地图到规划器节点（双种子：start+goal确保连通性）。
+        seeds: list of [x, y, z] arrays or tuples
         Returns: (success, traversability_ms, surface_count, memory_bytes)
         """
         request = SetVoxelMap.Request()
         request.resolution = float(resolution)
-        request.seed_point.x = float(seed[0])
-        request.seed_point.y = float(seed[1])
-        request.seed_point.z = float(seed[2])
+        for s in seeds:
+            p = Point()
+            p.x, p.y, p.z = float(s[0]), float(s[1]), float(s[2])
+            request.seed_points.append(p)
         for v in voxel_centers:
             p = Point()
             p.x, p.y, p.z = float(v[0]), float(v[1]), float(v[2])
             request.occupied.append(p)
 
-        print(f'  [MAP] 发送 {len(voxel_centers)} 个体素 + seed {seed.tolist()} ...')
+        print(f'  [MAP] 发送 {len(voxel_centers)} 个体素, {len(seeds)} 个种子...')
         response = self._call_service(
             self.set_map_client, request, 'set_voxel_map',
             timeout_sec=self.map_load_timeout_sec)
@@ -415,11 +417,10 @@ class AutoBenchmarkNode(Node):
 
     def run_jps_row(self, row: dict, voxel_centers: np.ndarray,
                     tp_ms: float, num_trials: int) -> dict:
-        seed = np.array([float(row['seed_x']), float(row['seed_y']), float(row['seed_z'])])
         start = np.array([float(row['start_x']), float(row['start_y']), float(row['start_z'])])
         goal = np.array([float(row['goal_x']), float(row['goal_y']), float(row['goal_z'])])
 
-        ok, te_ms, _, mem = self.set_voxel_map(voxel_centers, seed, float(row['resolution']))
+        ok, te_ms, _, mem = self.set_voxel_map(voxel_centers, [start, goal], float(row['resolution']))
         if not ok:
             return _failed_result(tp_ms=tp_ms)
 
@@ -518,11 +519,10 @@ def _scene_key(row: dict) -> tuple:
 
 
 def _seed_key(row: dict) -> tuple:
-    """Rows with same scene key AND seed share a single set_voxel_map call (TopoNav)."""
+    """Double-seed: start+goal uniquely determine the surface. Re-upload per episode."""
     return _scene_key(row) + (
-        float(row.get('seed_x', 0)),
-        float(row.get('seed_y', 0)),
-        float(row.get('seed_z', 0)),
+        float(row.get('start_x', 0)), float(row.get('start_y', 0)), float(row.get('start_z', 0)),
+        float(row.get('goal_x', 0)),  float(row.get('goal_y', 0)),  float(row.get('goal_z', 0)),
     )
 
 
@@ -720,10 +720,10 @@ def main():
                 prev_scene_key = sk
 
             if seed_k != prev_seed_key:
-                seed = np.array([float(row['seed_x']), float(row['seed_y']),
-                                 float(row['seed_z'])])
+                start_s = np.array([float(row['start_x']), float(row['start_y']), float(row['start_z'])])
+                goal_s  = np.array([float(row['goal_x']),  float(row['goal_y']),  float(row['goal_z'])])
                 ok, te_ms, _, topo_mem = node.set_voxel_map(
-                    voxel_centers, seed, float(row['resolution']))
+                    voxel_centers, [start_s, goal_s], float(row['resolution']))
                 if not ok:
                     results_by_idx[id(row)] = _failed_result(tp_ms=tp_ms)
                     continue

@@ -85,9 +85,8 @@ private:
     const std::shared_ptr<srv::SetVoxelMap::Request> request,
     std::shared_ptr<srv::SetVoxelMap::Response> response)
   {
-    RCLCPP_INFO(get_logger(), "set_voxel_map: occupied=%zu, res=%.3f, seed=(%.2f, %.2f, %.2f)",
-      request->occupied.size(), request->resolution,
-      request->seed_point.x, request->seed_point.y, request->seed_point.z);
+    RCLCPP_INFO(get_logger(), "set_voxel_map: occupied=%zu, res=%.3f, seeds=%zu",
+      request->occupied.size(), request->resolution, request->seed_points.size());
 
     if (request->resolution <= 0.0) {
       response->success = false;
@@ -104,15 +103,13 @@ private:
       voxels.emplace_back(static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z));
     }
 
-    std::tuple<float, float, float> seed_point = {
-      static_cast<float>(request->seed_point.x),
-      static_cast<float>(request->seed_point.y),
-      static_cast<float>(request->seed_point.z)
-    };
-    
-    bool use_seed = (request->seed_point.x != 0.0 || 
-                     request->seed_point.y != 0.0 || 
-                     request->seed_point.z != 0.0);
+    std::vector<std::tuple<float, float, float>> seeds;
+    seeds.reserve(request->seed_points.size());
+    for (const auto& p : request->seed_points) {
+      seeds.emplace_back(static_cast<float>(p.x),
+                         static_cast<float>(p.y),
+                         static_cast<float>(p.z));
+    }
 
     {
       std::lock_guard<std::mutex> lock(map_mutex_);
@@ -120,8 +117,7 @@ private:
       voxel_map_->setSurfaceClearanceHeight(get_parameter("surface_clearance_height").as_double());
       voxel_map_->setDistanceFieldMaxDistance(get_parameter("distance_field_max_distance").as_int());
 
-      bool updated = voxel_map_->updateFromPoints(voxels, request->resolution, 
-                                                   use_seed ? &seed_point : nullptr);
+      bool updated = voxel_map_->updateFromPoints(voxels, request->resolution, seeds);
       if (!updated) {
         response->success = false;
         response->message = "Failed to update voxel map (empty data?)";

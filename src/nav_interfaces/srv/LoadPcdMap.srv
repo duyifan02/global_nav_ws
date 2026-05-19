@@ -2,7 +2,7 @@ string pcd_path
 float64 resolution
 int32 min_points_per_voxel
 float64 max_abs_coord
-geometry_msgs/Point seed_point
+geometry_msgs/Point[] seed_points
 ---
 bool success
 string message

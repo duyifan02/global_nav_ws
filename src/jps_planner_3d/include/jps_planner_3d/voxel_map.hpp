@@ -34,17 +34,18 @@ public:
     ~VoxelMap();
 
     /**
-     * @brief 从点云更新体素地图
+     * @brief 从点云更新体素地图（多种子版本）
      *
      * @param occupied_voxels 占据体素的世界坐标列表
      * @param resolution 体素分辨率
-     * @param seed_point 可选的BFS种子点（世界坐标），用于指定可行走区域的起始位置
-     *                   如果为nullptr，则从原点附近自动搜索
+     * @param seed_points BFS种子点列表（世界坐标）。推荐传入 [start, goal] 双种子，
+     *                    确保起点和终点所在的连通分量都被包含在surface中。
+     *                    为空时从原点附近自动搜索。
      * @return true表示更新成功，false表示失败
      */
     bool updateFromPoints(const std::vector<std::tuple<float, float, float>>& occupied_voxels,
                           double resolution,
-                          const std::tuple<float, float, float>* seed_point = nullptr);
+                          const std::vector<std::tuple<float, float, float>>& seed_points = {});
 
     /**
      * @brief 检查地图是否就绪
@@ -252,10 +253,10 @@ public:
 
 private:
     /**
-     * @brief 从指定种子点开始BFS构建可到达区域
-     * @param seed_point 可选的种子点（世界坐标），nullptr则自动搜索
+     * @brief 从多个种子点开始BFS构建可到达区域
+     * @param seed_points 种子点列表（世界坐标），为空则自动搜索
      */
-    void buildReachableMap(const std::tuple<float, float, float>* seed_point = nullptr);
+    void buildReachableMap(const std::vector<std::tuple<float, float, float>>& seed_points = {});
 
     /**
      * @brief 只在Surface上使用DP算法计算距离场
