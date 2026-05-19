@@ -193,13 +193,13 @@ private:
       return;
     }
 
-    std::tuple<float, float, float> seed_point = {
-      static_cast<float>(request->seed_point.x),
-      static_cast<float>(request->seed_point.y),
-      static_cast<float>(request->seed_point.z)
-    };
-    bool use_seed =
-      (request->seed_point.x != 0.0 || request->seed_point.y != 0.0 || request->seed_point.z != 0.0);
+    std::vector<std::tuple<float, float, float>> seeds_pcd;
+    seeds_pcd.reserve(request->seed_points.size());
+    for (const auto& p : request->seed_points) {
+      seeds_pcd.emplace_back(static_cast<float>(p.x),
+                              static_cast<float>(p.y),
+                              static_cast<float>(p.z));
+    }
 
     {
       std::lock_guard<std::mutex> lock(map_mutex_);
@@ -210,7 +210,7 @@ private:
       bool updated = voxel_map_->updateFromPoints(
         voxelized.occupied_voxels,
         request->resolution,
-        use_seed ? &seed_point : nullptr);
+        seeds_pcd);
       if (!updated) {
         response->message = "Failed to update voxel map from voxelized pcd";
         return;
