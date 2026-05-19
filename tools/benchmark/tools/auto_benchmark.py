@@ -262,8 +262,8 @@ class AutoBenchmarkNode(Node):
 
     def set_voxel_map(self, voxel_centers: np.ndarray, seeds: list,
                       resolution: float) -> Tuple[bool, float, int, float]:
-        """发送体素地图到规划器节点（双种子：start+goal确保连通性）。
-        seeds: list of [x, y, z] arrays or tuples
+        """发送体素地图到规划器节点（从start种子做BFS，提取连通面）。
+        seeds: list of [x, y, z] arrays or tuples (typically just [start])
         Returns: (success, traversability_ms, surface_count, memory_bytes)
         """
         request = SetVoxelMap.Request()
@@ -420,7 +420,7 @@ class AutoBenchmarkNode(Node):
         start = np.array([float(row['start_x']), float(row['start_y']), float(row['start_z'])])
         goal = np.array([float(row['goal_x']), float(row['goal_y']), float(row['goal_z'])])
 
-        ok, te_ms, _, mem = self.set_voxel_map(voxel_centers, [start, goal], float(row['resolution']))
+        ok, te_ms, _, mem = self.set_voxel_map(voxel_centers, [start], float(row['resolution']))
         if not ok:
             return _failed_result(tp_ms=tp_ms)
 
@@ -519,10 +519,9 @@ def _scene_key(row: dict) -> tuple:
 
 
 def _seed_key(row: dict) -> tuple:
-    """Double-seed: start+goal uniquely determine the surface. Re-upload per episode."""
+    """Single-seed from start: surface is extracted from start's connected component."""
     return _scene_key(row) + (
         float(row.get('start_x', 0)), float(row.get('start_y', 0)), float(row.get('start_z', 0)),
-        float(row.get('goal_x', 0)),  float(row.get('goal_y', 0)),  float(row.get('goal_z', 0)),
     )
 
 
@@ -721,9 +720,8 @@ def main():
 
             if seed_k != prev_seed_key:
                 start_s = np.array([float(row['start_x']), float(row['start_y']), float(row['start_z'])])
-                goal_s  = np.array([float(row['goal_x']),  float(row['goal_y']),  float(row['goal_z'])])
                 ok, te_ms, _, topo_mem = node.set_voxel_map(
-                    voxel_centers, [start_s, goal_s], float(row['resolution']))
+                    voxel_centers, [start_s], float(row['resolution']))
                 if not ok:
                     results_by_idx[id(row)] = _failed_result(tp_ms=tp_ms)
                     continue
