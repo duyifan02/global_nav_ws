@@ -20,6 +20,7 @@
 #include "topo_nav/hierarchical_planner.hpp"
 #include "topo_nav/prm_planner.hpp"
 #include "topo_nav/alt_planner.hpp"
+#include "topo_nav/tau_selector.hpp"
 
 // Reuse existing map-loading services from nav_interfaces
 #include "nav_interfaces/srv/set_voxel_map.hpp"
@@ -255,9 +256,13 @@ private:
     flat_mode_ = false;
 
     // ── Common parameters ───────────────────────────────────────────────────
-    const float tau = static_cast<float>(req->persistence_tau > 0
+    const float tau_raw = static_cast<float>(req->persistence_tau > 0
       ? req->persistence_tau
       : get_parameter("persistence_tau").as_double());
+    // tau_raw < 0 means "auto-select" (adaptive τ)
+    const bool auto_tau = (req->persistence_tau < 0);
+    float tau = auto_tau ? 5.0f : tau_raw;  // default, overridden by selector
+
     const float H_floor = static_cast<float>(req->floor_separation_m > 0
       ? req->floor_separation_m
       : get_parameter("floor_separation_m").as_double());
@@ -283,10 +288,22 @@ private:
       auto ph_t1 = std::chrono::steady_clock::now();
       persistence_ms = std::chrono::duration<double, std::milli>(ph_t1 - ph_t0).count();
 
+      // Adaptive τ selection: evaluate candidates {3,4,5,6}
+      if (auto_tau) {
+        auto sel = selectTau(pr_, *voxel_map_);
+        tau = sel.selected_tau;
+        RCLCPP_INFO(get_logger(),
+          "Auto τ selected: %.1f (score=%.1f) in %.1f ms",
+          sel.selected_tau, sel.candidates[sel.selected_idx].score,
+          sel.selection_time_ms);
+        // Include selection time in segmentation time
+        segmentation_ms += sel.selection_time_ms;
+      }
+
       auto seg_t0 = std::chrono::steady_clock::now();
       rg_ = segmentRooms(pr_, *voxel_map_, tau);
       auto seg_t1 = std::chrono::steady_clock::now();
-      segmentation_ms = std::chrono::duration<double, std::milli>(seg_t1 - seg_t0).count();
+      segmentation_ms += std::chrono::duration<double, std::milli>(seg_t1 - seg_t0).count();
     }
 
     // Floor detection + room classification
@@ -371,6 +388,7 @@ private:
     res->transfer_pairs_total    = ps.transfer_pairs_total;
     res->transfer_pairs_cached   = ps.transfer_pairs_cached;
     res->transfer_coverage       = ps.transfer_coverage;
+    res->selected_tau            = static_cast<double>(tau);
 
     RCLCPP_INFO(get_logger(),
       "BuildTopoMap [%s]: %d rooms (%d stair, %d corr), %d floors, "

@@ -33,3 +33,4 @@ float64 skipped_voxel_fraction
 int32 transfer_pairs_total
 int32 transfer_pairs_cached
 float64 transfer_coverage
+float64 selected_tau

@@ -23,6 +23,7 @@ add_library(${PROJECT_NAME}_core SHARED
   src/hierarchical_planner.cpp
   src/prm_planner.cpp
   src/alt_planner.cpp
+  src/tau_selector.cpp
 )
 
 target_include_directories(${PROJECT_NAME}_core PUBLIC

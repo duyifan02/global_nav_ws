@@ -109,6 +109,7 @@ RESULT_COLS = [
     'tg_connected_components',
     'skipped_rooms',
     'transfer_coverage',
+    'selected_tau',
 ]
 
 ALL_COLS = [c for c in INPUT_COLS if c != 'planning_time_ms'] + RESULT_COLS
@@ -347,6 +348,7 @@ class AutoBenchmarkNode(Node):
                 'tg_connected_components': int(getattr(response, 'tg_connected_components', 0)),
                 'skipped_rooms': int(getattr(response, 'skipped_rooms', 0)),
                 'transfer_coverage': float(getattr(response, 'transfer_coverage', 0.0)),
+                'selected_tau': float(getattr(response, 'selected_tau', 0.0)),
             }
             tg_info = (f', TG={extra["tg_nodes"]}n/{extra["tg_edges"]}e '
                        f'skip={extra["skipped_rooms"]} cov={extra["transfer_coverage"]:.1%}'
@@ -624,7 +626,8 @@ def main():
                         help='跳过 planning_time_ms 非 None 的行（与 --force 互斥）')
 
     # TopoNav parameters
-    parser.add_argument('--tau', type=float, default=3.0)
+    parser.add_argument('--tau', type=float, default=3.0,
+                        help='Persistence τ threshold (use -1 for auto-selection)')
     parser.add_argument('--floor-sep', type=float, default=2.5)
     parser.add_argument('--corridor-ratio', type=float, default=3.0)
     parser.add_argument('--stair-var', type=float, default=0.5)
