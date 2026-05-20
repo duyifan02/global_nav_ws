@@ -46,13 +46,14 @@ def main():
     flat     = load_by_scene('100_flat_01m.csv')
     no_st5   = load_by_scene('100_no_stitch_tau5_01m.csv')
     grid5    = load_by_scene('100_grid_tau5_01m.csv')
+    prm1k    = load_by_scene('100_prm_1k_01m.csv')
     tg3      = load_by_scene('100_tg_tau3_01m.csv')
     tg4      = load_by_scene('100_tg_tau4_01m.csv')
     tg5      = load_by_scene('100_tg_tau5_01m.csv')
     full5    = load_by_scene('100_full_tau5_01m.csv')
 
     print(f"\nScenes loaded: JPS={len(jps)}, ALT={len(alt)}, flat={len(flat)}, "
-          f"NoStitch5={len(no_st5)}, Grid5={len(grid5)}, "
+          f"NoStitch5={len(no_st5)}, Grid5={len(grid5)}, PRM1k={len(prm1k)}, "
           f"TG3={len(tg3)}, TG4={len(tg4)}, TG5={len(tg5)}, Full5={len(full5)}")
 
     # ── Per-method aggregate stats ────────────────────────────────────────
@@ -60,7 +61,7 @@ def main():
     print(f"{'Method':20s} {'N':5s} {'Median':8s} {'Mean':8s} {'p95':8s}")
     for label, d in [('JPS', jps), ('flat', flat), ('ALT', alt),
                      ('no_stitch τ=5', no_st5), ('grid τ=5', grid5),
-                     ('full τ=5', full5),
+                     ('PRM 1k', prm1k), ('full τ=5', full5),
                      ('TG τ=3', tg3), ('TG τ=4', tg4), ('TG τ=5', tg5)]:
         if not d:
             print(f"{label:20s}  no data")
@@ -73,20 +74,20 @@ def main():
     # ── Speedup comparisons ───────────────────────────────────────────────
     print("\n=== Speedup vs JPS ===")
     for label, d in [('ALT', alt), ('no_stitch τ=5', no_st5), ('grid τ=5', grid5),
-                     ('full τ=5', full5),
+                     ('PRM 1k', prm1k), ('full τ=5', full5),
                      ('TG τ=3', tg3), ('TG τ=4', tg4), ('TG τ=5', tg5)]:
         print(' ', speedup_stats(jps, d, label))
 
     print("\n=== Speedup vs ALT ===")
     for label, d in [('no_stitch τ=5', no_st5), ('grid τ=5', grid5),
-                     ('full τ=5', full5),
+                     ('PRM 1k', prm1k), ('full τ=5', full5),
                      ('TG τ=3', tg3), ('TG τ=4', tg4), ('TG τ=5', tg5)]:
         print(' ', speedup_stats(alt, d, label))
 
     # ── Ablation chain: flat → no_stitch → full → TG ─────────────────────
     print("\n=== Ablation Chain (vs flat_surface) ===")
     for label, d in [('ALT', alt), ('no_stitch τ=5', no_st5), ('grid τ=5', grid5),
-                     ('full τ=5', full5), ('TG τ=5', tg5)]:
+                     ('PRM 1k', prm1k), ('full τ=5', full5), ('TG τ=5', tg5)]:
         print(' ', speedup_stats(flat, d, label))
 
     # ── Best-tau per scene ────────────────────────────────────────────────
@@ -138,6 +139,7 @@ def main():
         ('flat', flat, 'Flat surface A*'),
         ('no_st5', no_st5, 'No-stitch (PH, τ=5)'),
         ('grid5', grid5, 'Grid HPA* (τ=5)'),
+        ('prm1k', prm1k, 'PRM (1000 samples)'),
         ('ALT', alt, 'ALT A* (16 lm)'),
         ('Full τ=5', full5, 'Full HPA* τ=5'),
         ('TG τ=3', tg3, 'PH-ALT-TG τ=3'),

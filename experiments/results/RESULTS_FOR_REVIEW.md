@@ -387,14 +387,15 @@ Root cause: at τ=5, fewer rooms → fewer portal voxels between adjacent region
 
 *(Isolates the contribution of each architectural component)*
 
-| Method | Median Ts | vs JPS | vs ALT | Scenes | Key component |
-|--------|-----------|--------|--------|--------|---------------|
-| JPS / flat_surface | 0.317ms | 1.0x | 0.30x | 97 | Baseline |
-| no_stitch (PH + online A*) | 0.308ms | **1.0x** | 0.31x | 97 | +PH rooms (no precompute) |
-| Grid HPA* (uniform grid + cache) | 0.080ms | **4.0x** | **0.84x** | 95 | +precomputed transfers |
-| ALT A* (surface + 16 landmarks) | 0.095ms | **3.3x** | **1.0x** | 95 | +global heuristic (no cache) |
-| Full HPA* (PH + cache + Euclidean) | 0.048ms | **6.6x** | **2.0x** | 96 | +PH rooms improve cache |
-| **PH-ALT-TG (PH + cache + ALT)** | **0.045ms** | **7.1x** | **2.1x** | 96 | **+ALT on transition graph** |
+| Method | Median Ts | vs JPS | Path overhead | Scenes | Key component |
+|--------|-----------|--------|---------------|--------|---------------|
+| JPS / flat_surface | 0.317ms | 1.0x | 0% | 97 | Baseline |
+| no_stitch (PH + online A*) | 0.308ms | **1.0x** | ~0% | 97 | +PH rooms (no precompute) |
+| PRM (1000 samples) | 0.350ms | 0.96x | +50% | 97 | Probabilistic roadmap |
+| Grid HPA* (uniform grid + cache) | 0.080ms | **4.0x** | +39% | 95 | +precomputed transfers |
+| ALT A* (surface + 16 landmarks) | 0.095ms | **3.3x** | ~0% | 95 | +global heuristic (no cache) |
+| Full HPA* (PH + cache + Euclidean) | 0.048ms | **6.6x** | +12% | 96 | +PH rooms improve cache |
+| **PH-ALT-TG (PH + cache + ALT)** | **0.045ms** | **7.1x** | +10–14% | 96 | **+ALT on transition graph** |
 
 **Key ablation findings:**
 
@@ -415,15 +416,16 @@ Root cause: at τ=5, fewer rooms → fewer portal voxels between adjacent region
 | Method | Median Ts | Speedup | Path overhead | Notes |
 |--------|-----------|---------|---------------|-------|
 | flat_surface / JPS | 0.310ms | 1.0x | +0.0% | Near-optimal |
-| no_stitch τ=5 | 0.308ms | 1.0x | -0.0% | Online A* = near-optimal |
-| ALT A* | 0.095ms | 3.3x | **-0.3%** | Near-optimal (admissible heuristic) |
+| no_stitch τ=5 | 0.308ms | 1.0x | ~0.0% | Online A* = near-optimal |
+| PRM (1000 samples) | 0.350ms | 0.96x | **+50.1%** | Slower AND longer paths |
+| ALT A* (16 lm) | 0.095ms | 3.3x | **-0.3%** | Near-optimal (admissible heuristic) |
 | Grid HPA* τ=5 | 0.080ms | 4.0x | **+39.1%** | Grid boundaries cause detours |
 | Full HPA* τ=5 | 0.048ms | 6.6x | +12.4% | PH reduces detours vs grid |
 | TG τ=3 | 0.050ms | 6.3x | **+9.8%** | Best path quality among TG |
 | TG τ=5 | 0.045ms | 7.1x | +12.0% | Slightly more detour |
 | TG τ=4 | 0.050ms | 6.4x | +14.3% | |
 
-**Key insight**: PH segmentation matters for *path quality* too — +12% overhead vs +39% for grid. ALT A* delivers near-optimal paths at 3.3x speedup; TG τ=3 delivers the best speed-quality tradeoff (6.3x speedup, +9.8% overhead).
+**Key insight**: PH segmentation matters for *path quality* too — +12% overhead vs +39% for grid and +50% for PRM. ALT A* delivers near-optimal paths at 3.3x speedup; TG τ=3 delivers the best speed-quality tradeoff (6.3x speedup, +9.8% overhead).
 
 ### 2.7 HM3D Tuning Results (10 Minival Scenes, Start-as-Seed)
 
