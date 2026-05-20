@@ -239,3 +239,26 @@ All CSVs are in `experiments/results/`. Each has 6 rows (one per scene) with col
 | PH-ALT-TG landmark ablation | `ph_alt_tg_lm{0-16}_01m_results.csv` | LM=0,2,4,8,16 at 0.1m, tau=3 |
 | PH-ALT-TG cross-res | `ph_alt_tg_{res}m_tau3_results.csv` | tau=3 at 0.1/0.075/0.05m |
 | PH-ALT-TG 0.05m | `ph_alt_tg_tau{5,8}_005m_results.csv` | tau=5,8 at 0.05m |
+| **HM3D validation** | `hm3d/hm3d_{method}_01m.csv` | 10 HM3D minival scenes, 9 methods, 5 ep/scene |
+
+---
+
+## 11. HM3D Cross-Dataset Validation (2026-05-18)
+
+Full results in `experiments/results/hm3d/HM3D_EXPERIMENT_SUMMARY.md`.
+
+**Setup**: 10 HM3D minival scenes (GLB→OBJ), 5 PointNav episodes per scene, 0.1m resolution, 3 trials.
+**Coordinate transform**: `mesh_x = hab_x, mesh_y = -hab_z, mesh_z = hab_y` (Habitat Y-up → mesh native).
+**Success**: 8/10 scenes (2 multi-floor scenes fail due to seed placement between floors).
+
+| Method | Mean Ts (ms) | Mean Path (m) | Speedup vs flat |
+|--------|-------------|--------------|----------------|
+| JPS (Surface A*) | 0.920 | 20.1 | 1.3x |
+| flat_surface | 1.167 | 18.6 | 1.0x |
+| ALT A* | 0.883 | 16.6 | 1.3x |
+| PRM | 1.002 | 31.2 | 1.2x |
+| full (HPA*) | 0.673 | 22.0 | 1.7x |
+| **PH-ALT-TG τ=3** | **0.672** | 20.1 | **1.7x** |
+| PH-ALT-TG τ=4 | 1.031 | 19.4 | 1.1x |
+
+**Cross-dataset comparison**: PH-ALT-TG achieves 8.5x on MP3D but 1.7x on HM3D. The difference is due to HM3D's simpler topology (residential floorplans) where the transition graph overhead is less amortized. The method still provides the fastest or near-fastest query time across both datasets.

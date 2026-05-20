@@ -275,6 +275,51 @@ def fig_speedup_cdf():
     print(f'Fig5 saved: speedup CDF ({n} scenes)')
 
 
+# ── Figure 6: Amortized cost vs query count ──────────────────────────────────
+def fig_amortized_cost():
+    methods = [
+        ('Surface A* (JPS)',   0.0,   0.317, '#888888', '-',  'o'),
+        ('ALT A* (16 lm)',    41.2,   0.095, '#1f78b4', '-',  'o'),
+        ('Full HPA* τ=5',     32.1,   0.048, '#cab2d6', '--', 's'),
+        ('PH-ALT-TG τ=3',    50.3,   0.050, '#33a02c', '-',  'v'),
+        ('PH-ALT-TG τ=5',    26.6,   0.045, '#e31a1c', '-',  '*'),
+    ]
+
+    Q = np.logspace(0, 3, 300)  # 1 to 1000 queries
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    for name, t_pre, t_q, color, ls, marker in methods:
+        T = t_pre / Q + t_q
+        ax.plot(Q, T, color=color, linestyle=ls, linewidth=1.8, label=name)
+        # Mark endpoint value
+        ax.annotate(f'{t_q:.3f}ms', xy=(1000, t_q), xytext=(5, 0),
+                    textcoords='offset points', fontsize=7, color=color,
+                    va='center')
+
+    # Break-even: TG5 vs JPS
+    t_pre_tg5, t_q_tg5 = 26.6, 0.045
+    t_q_jps = 0.317
+    if t_q_jps > t_q_tg5:
+        q_star = t_pre_tg5 / (t_q_jps - t_q_tg5)
+        ax.axvline(x=q_star, color='#e31a1c', linestyle=':', linewidth=1, alpha=0.6)
+        ax.text(q_star * 1.05, 1.0, f'Q*≈{q_star:.0f}', fontsize=8.5,
+                color='#e31a1c', va='top')
+
+    ax.set_xscale('log')
+    ax.set_yscale('log')
+    ax.set_xlabel('Number of queries Q per scene')
+    ax.set_ylabel('Amortized cost per query (ms)')
+    ax.set_title('Amortized cost: $T_{pre}/Q + T_s$ vs query count')
+    ax.legend(loc='upper right', fontsize=8.5, framealpha=0.9)
+    ax.set_xlim(1, 1000)
+    ax.grid(True, alpha=0.3, which='both')
+    plt.tight_layout()
+    fig.savefig(os.path.join(OUT, 'fig6_amortized_cost.pdf'), bbox_inches='tight')
+    fig.savefig(os.path.join(OUT, 'fig6_amortized_cost.png'), bbox_inches='tight')
+    plt.close()
+    print(f'Fig6 saved: amortized cost (break-even TG5 vs JPS at Q*≈{q_star:.0f})')
+
+
 if __name__ == '__main__':
     print("Generating figures...")
     fig_speedup_distribution()
@@ -282,4 +327,5 @@ if __name__ == '__main__':
     fig_ablation_bars()
     fig_best_tau()
     fig_speedup_cdf()
+    fig_amortized_cost()
     print(f"\nAll figures saved to: {OUT}")
