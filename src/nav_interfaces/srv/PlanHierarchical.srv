@@ -15,3 +15,23 @@ float64 path_length_m
 int32[] room_sequence
 int32[] floor_sequence
 int64 voxel_nodes_expanded
+
+# ── Per-query diagnostics (PH-ALT-TG) ──
+int32 diag_start_room
+int32 diag_goal_room
+bool diag_same_room
+int32 diag_room_hops
+int32 diag_tg_expanded
+float64 diag_tg_astar_ms
+float64 diag_h_start
+float64 diag_tg_cost
+int32 diag_stitch_segments
+int32 diag_stitch_cached
+int32 diag_stitch_fallback
+float64 diag_stitch_ms
+int32 diag_fallback_nodes
+string diag_fallback_reason
+bool diag_cache_hit_all
+int32 diag_tg_nodes
+int32 diag_start_portals
+int32 diag_goal_portals

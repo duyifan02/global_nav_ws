@@ -19,3 +19,17 @@ float64 persistence_time_ms
 float64 segmentation_time_ms
 float64 precompute_time_ms
 int64 memory_usage_bytes
+
+# ── Precompute diagnostics ──
+int32 tg_nodes
+int32 tg_edges
+int32 tg_landmarks
+int32 tg_connected_components
+int32 max_room_voxels
+int32 max_room_portals
+float64 max_room_fraction
+int32 skipped_rooms
+float64 skipped_voxel_fraction
+int32 transfer_pairs_total
+int32 transfer_pairs_cached
+float64 transfer_coverage

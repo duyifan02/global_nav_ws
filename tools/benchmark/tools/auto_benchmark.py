@@ -89,6 +89,26 @@ RESULT_COLS = [
     'persistence_time_ms',
     'segmentation_time_ms',
     'precompute_time_ms',
+    # Per-query diagnostics (PH-ALT-TG)
+    'diag_start_room',
+    'diag_goal_room',
+    'diag_same_room',
+    'diag_room_hops',
+    'diag_tg_expanded',
+    'diag_tg_astar_ms',
+    'diag_stitch_segments',
+    'diag_stitch_cached',
+    'diag_stitch_fallback',
+    'diag_stitch_ms',
+    'diag_fallback_nodes',
+    'diag_fallback_reason',
+    'diag_cache_hit_all',
+    # Scene-level precompute stats
+    'tg_nodes',
+    'tg_edges',
+    'tg_connected_components',
+    'skipped_rooms',
+    'transfer_coverage',
 ]
 
 ALL_COLS = [c for c in INPUT_COLS if c != 'planning_time_ms'] + RESULT_COLS
@@ -321,12 +341,21 @@ class AutoBenchmarkNode(Node):
                 'segmentation_time_ms': float(getattr(response, 'segmentation_time_ms', 0.0)),
                 'precompute_time_ms': float(getattr(response, 'precompute_time_ms', 0.0)),
                 'topo_memory_bytes': int(getattr(response, 'memory_usage_bytes', 0)),
+                # Precompute diagnostics
+                'tg_nodes': int(getattr(response, 'tg_nodes', 0)),
+                'tg_edges': int(getattr(response, 'tg_edges', 0)),
+                'tg_connected_components': int(getattr(response, 'tg_connected_components', 0)),
+                'skipped_rooms': int(getattr(response, 'skipped_rooms', 0)),
+                'transfer_coverage': float(getattr(response, 'transfer_coverage', 0.0)),
             }
+            tg_info = (f', TG={extra["tg_nodes"]}n/{extra["tg_edges"]}e '
+                       f'skip={extra["skipped_rooms"]} cov={extra["transfer_coverage"]:.1%}'
+                       if extra['tg_nodes'] > 0 else '')
             print(f'  [TOPO] 构建成功 [{self.planner_mode}]: '
                   f'{response.num_rooms} 房间, {response.num_floors} 楼层, '
                   f'{response.num_staircases} 楼梯间, Ttopo={topo_ms:.1f}ms '
                   f'(PH={extra["persistence_time_ms"]:.1f} + seg={extra["segmentation_time_ms"]:.1f} '
-                  f'+ pre={extra["precompute_time_ms"]:.1f}ms)')
+                  f'+ pre={extra["precompute_time_ms"]:.1f}ms){tg_info}')
             return True, topo_ms, extra
         else:
             msg = response.message if response else 'No response'
@@ -392,6 +421,26 @@ class AutoBenchmarkNode(Node):
         if response is None:
             return {'success': False, 'error': 'Service timeout',
                     'ts_ms': 0.0, 'ns_visited_nodes': 0, 'path_length_m': 0.0}
+        # Extract diagnostics (may not be present on older builds)
+        def _get_diag(resp, attr, default=None):
+            return getattr(resp, attr, default)
+
+        diag_fields = {
+            'diag_start_room':       _get_diag(response, 'diag_start_room', -1),
+            'diag_goal_room':        _get_diag(response, 'diag_goal_room', -1),
+            'diag_same_room':        _get_diag(response, 'diag_same_room', False),
+            'diag_room_hops':        _get_diag(response, 'diag_room_hops', 0),
+            'diag_tg_expanded':      _get_diag(response, 'diag_tg_expanded', 0),
+            'diag_tg_astar_ms':      _get_diag(response, 'diag_tg_astar_ms', 0.0),
+            'diag_stitch_segments':  _get_diag(response, 'diag_stitch_segments', 0),
+            'diag_stitch_cached':    _get_diag(response, 'diag_stitch_cached', 0),
+            'diag_stitch_fallback':  _get_diag(response, 'diag_stitch_fallback', 0),
+            'diag_stitch_ms':        _get_diag(response, 'diag_stitch_ms', 0.0),
+            'diag_fallback_nodes':   _get_diag(response, 'diag_fallback_nodes', 0),
+            'diag_fallback_reason':  _get_diag(response, 'diag_fallback_reason', ''),
+            'diag_cache_hit_all':    _get_diag(response, 'diag_cache_hit_all', True),
+        }
+
         if response.success:
             path = np.array([[p.pose.position.x, p.pose.position.y, p.pose.position.z]
                              for p in response.path.poses])
@@ -403,6 +452,7 @@ class AutoBenchmarkNode(Node):
                 'ns_visited_nodes': int(response.voxel_nodes_expanded),
                 'path_length_m': float(length),
                 'error': None,
+                **diag_fields,
             }
         else:
             return {
@@ -411,6 +461,7 @@ class AutoBenchmarkNode(Node):
                 'ts_ms': float(response.planning_time_ms),
                 'ns_visited_nodes': int(response.voxel_nodes_expanded),
                 'path_length_m': 0.0,
+                **diag_fields,
             }
 
     # ── High-level per-row runner ──────────────────────────────────────────────
@@ -457,11 +508,12 @@ class AutoBenchmarkNode(Node):
 
     def run_topo_row(self, row: dict, voxel_centers: np.ndarray,
                      tp_ms: float, topo_ms: float, te_ms: float, mem: int,
-                     num_trials: int) -> dict:
+                     num_trials: int, topo_extra: dict = None) -> dict:
         start = np.array([float(row['start_x']), float(row['start_y']), float(row['start_z'])])
         goal = np.array([float(row['goal_x']), float(row['goal_y']), float(row['goal_z'])])
 
         ts_list, nodes_list, lengths = [], [], []
+        last_diag = {}  # keep last trial's diagnostics
         for i in range(num_trials):
             r = self.plan_topo(start, goal)
             status = (f"✓ Ts={r['ts_ms']:.2f}ms | {r.get('path_length_m', 0):.2f}m"
@@ -471,12 +523,15 @@ class AutoBenchmarkNode(Node):
                 ts_list.append(r['ts_ms'])
                 nodes_list.append(r['ns_visited_nodes'])
                 lengths.append(r['path_length_m'])
+                # Keep diagnostics from last successful trial
+                last_diag = {k: v for k, v in r.items()
+                             if k.startswith('diag_')}
 
         if not ts_list:
             return _failed_result(tp_ms=tp_ms, te_ms=te_ms, topo_ms=topo_ms, mem=mem)
 
         total_ms = tp_ms + te_ms + topo_ms + float(np.mean(ts_list))
-        return {
+        result = {
             'success': True,
             'planning_time_ms': float(np.mean(ts_list)),
             'planning_time_std_ms': float(np.std(ts_list)),
@@ -489,6 +544,15 @@ class AutoBenchmarkNode(Node):
             'total_time_ms': total_ms,
             'trials_count': len(ts_list),
         }
+        # Add per-query diagnostics from last trial
+        result.update(last_diag)
+        # Add scene-level precompute stats
+        if topo_extra:
+            for k in ('tg_nodes', 'tg_edges', 'tg_connected_components',
+                       'skipped_rooms', 'transfer_coverage'):
+                if k in topo_extra:
+                    result[k] = topo_extra[k]
+        return result
 
 
 def _failed_result(tp_ms=0.0, te_ms=0.0, topo_ms=None, mem=0) -> dict:
@@ -704,6 +768,7 @@ def main():
         prev_scene_key = None
         prev_seed_key = None
         topo_ms, te_ms, topo_mem = 0.0, 0.0, 0
+        topo_extra = {}
 
         for orig_idx, row in topo_rows:
             sk = _scene_key(row)
@@ -739,7 +804,8 @@ def main():
             print(f'\n[TOPO] scene={row["scene"]} | '
                   f'start={start.tolist()} → goal={goal.tolist()}')
             result = node.run_topo_row(
-                row, voxel_centers, tp_ms, topo_ms, te_ms, topo_mem, args.trials)
+                row, voxel_centers, tp_ms, topo_ms, te_ms, topo_mem, args.trials,
+                topo_extra=topo_extra)
             results_by_idx[id(row)] = result
 
         # ── Merge results back into all rows ──────────────────────────────────

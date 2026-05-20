@@ -16,6 +16,57 @@ namespace jps_planner_3d { class VoxelMap; }
 namespace topo_nav
 {
 
+/// Per-query diagnostic data for PH-ALT-TG analysis.
+struct QueryDiagnostics
+{
+  // ── Room-level routing ──
+  int    start_room        = -1;
+  int    goal_room         = -1;
+  bool   same_room         = false;
+  int    room_hops         = 0;     ///< Number of room transitions in route
+
+  // ── TG A* search stats ──
+  int    tg_expanded       = 0;     ///< Nodes popped from TG A* open list
+  double tg_astar_ms       = 0.0;   ///< TG A* wall-clock time
+  double h_start           = 0.0;   ///< ALT heuristic at start's first portal
+  double tg_cost           = 0.0;   ///< Optimal TG cost (g[VGOAL])
+
+  // ── Stitch / reconstruction ──
+  int    stitch_segments   = 0;     ///< Number of stitched segments
+  int    stitch_cached     = 0;     ///< Segments served from cache
+  int    stitch_fallback   = 0;     ///< Segments requiring online A*
+  double stitch_ms         = 0.0;   ///< Stitch wall-clock time
+  int    fallback_nodes    = 0;     ///< Total voxel expansions in fallback A*
+  std::string fallback_reason;      ///< Reason for first fallback (if any)
+
+  // ── Cache diagnostics ──
+  bool   cache_hit_all     = true;  ///< All segments served from precomputed data
+
+  // ── Connectivity ──
+  int    tg_nodes          = 0;     ///< |V_T| at query time
+  int    start_portals     = 0;     ///< Portals in start room
+  int    goal_portals      = 0;     ///< Portals in goal room
+};
+
+/// Scene-level precompute statistics (populated during BuildTopoMap).
+struct PrecomputeStats
+{
+  int    num_rooms             = 0;
+  int    num_edges             = 0;
+  int    tg_nodes              = 0;
+  int    tg_edges              = 0;
+  int    tg_landmarks          = 0;
+  int    tg_connected_components = 0;
+  int    max_room_voxels       = 0;
+  int    max_room_portals      = 0;
+  double max_room_fraction     = 0.0;  ///< max_room_voxels / |V_surface|
+  int    skipped_rooms         = 0;    ///< Rooms skipped by budget cap
+  double skipped_voxel_fraction = 0.0; ///< Fraction of voxels in skipped rooms
+  int    transfer_pairs_total  = 0;    ///< Expected transfer pairs
+  int    transfer_pairs_cached = 0;    ///< Actually cached pairs
+  double transfer_coverage     = 0.0;  ///< cached / total
+};
+
 struct HierarchicalPath
 {
   bool success = false;
@@ -35,6 +86,8 @@ struct HierarchicalPath
 
   double path_length_m      = 0.0;
   int voxel_nodes_expanded  = 0;
+
+  QueryDiagnostics diag;  ///< Detailed per-query diagnostics
 };
 
 /// Three-level hierarchical A* planner.
@@ -67,6 +120,9 @@ public:
   /// Precompute ALT landmarks on G_T via farthest-point Dijkstra.
   /// Must be called after setTopoMap() (which builds the transition graph).
   void precomputeTGLandmarks(int num_landmarks);
+
+  /// Get scene-level precompute statistics (valid after setTopoMap).
+  const PrecomputeStats & getPrecomputeStats() const { return precompute_stats_; }
 
   /// Plan from start to goal (requires setTopoMap).
   HierarchicalPath plan(
@@ -125,7 +181,8 @@ private:
     int goal_surf,
     const RoomRoute & route,
     int * out_expanded = nullptr,
-    const std::unordered_set<int>* fallback_corridor = nullptr) const;
+    const std::unordered_set<int>* fallback_corridor = nullptr,
+    QueryDiagnostics * diag = nullptr) const;
 
   /// Step 3: Voxel-level A* on surface graph.
   /// Room filter (mutually exclusive, corridor takes priority):
@@ -234,11 +291,12 @@ private:
   void buildTransitionGraph();
 
   /// A* on transition graph with ALT heuristic.  Returns RoomRoute
-  /// compatible with stitchPath().
+  /// compatible with stitchPath().  Populates diag if non-null.
   RoomRoute transitionGraphAstar(
     int start_surf, int goal_surf,
     const std::tuple<double, double, double> & start_world,
-    const std::tuple<double, double, double> & goal_world) const;
+    const std::tuple<double, double, double> & goal_world,
+    QueryDiagnostics * diag = nullptr) const;
 
   // ── Dirty-array A* state (space-for-time: eliminates per-call O(n) init) ──
   //
@@ -259,6 +317,12 @@ private:
   mutable std::vector<uint32_t> astar_g_gen_;       ///< generation when g/came_from written
   mutable std::vector<uint32_t> astar_cl_gen_;      ///< generation when node closed
   mutable uint32_t              astar_gen_ = 0;     ///< current generation counter
+
+  // ── Precompute stats ───────────────────────────────────────────────────────
+  PrecomputeStats precompute_stats_;
+
+  /// Count connected components of the transition graph via BFS.
+  int countTGComponents() const;
 
   // ── State ─────────────────────────────────────────────────────────────────
   std::shared_ptr<jps_planner_3d::VoxelMap> vmap_;

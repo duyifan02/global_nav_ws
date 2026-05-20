@@ -62,6 +62,11 @@ void HierarchicalPlanner::precomputeTransfers()
   const int R = rg_.num_rooms;
   transfer_E_ = E;
 
+  // Reset precompute stats
+  precompute_stats_ = PrecomputeStats{};
+  precompute_stats_.num_rooms = R;
+  precompute_stats_.num_edges = E;
+
   if (E == 0 || R == 0) return;
 
   const double INF = std::numeric_limits<double>::infinity();
@@ -74,6 +79,7 @@ void HierarchicalPlanner::precomputeTransfers()
   trans_field_.clear();
 
   // Precompute per-room voxel counts once (used for budget cap + Dijkstra termination)
+  const int V_total = static_cast<int>(vmap_->getSurfaceGraph().size());
   std::vector<int> room_voxel_count(R, 0);
   {
     const auto & graph_count = vmap_->getSurfaceGraph();
@@ -82,6 +88,28 @@ void HierarchicalPlanner::precomputeTransfers()
       if (rv >= 0 && rv < R) ++room_voxel_count[rv];
     }
   }
+
+  // Per-room portal count for stats
+  std::vector<int> room_portal_count(R, 0);
+  for (auto & [room_id, adj_list] : rg_.adjacency) {
+    if (room_id >= 0 && room_id < R)
+      room_portal_count[room_id] = static_cast<int>(adj_list.size());
+  }
+
+  // Aggregate room-level stats
+  int total_skipped_voxels = 0;
+  int total_transfer_pairs = 0;
+  int total_cached_pairs   = 0;
+
+  for (int r = 0; r < R; ++r) {
+    if (room_voxel_count[r] > precompute_stats_.max_room_voxels)
+      precompute_stats_.max_room_voxels = room_voxel_count[r];
+    if (room_portal_count[r] > precompute_stats_.max_room_portals)
+      precompute_stats_.max_room_portals = room_portal_count[r];
+  }
+  if (V_total > 0)
+    precompute_stats_.max_room_fraction =
+      static_cast<double>(precompute_stats_.max_room_voxels) / V_total;
 
   for (int r = 0; r < R; ++r) {
     const auto adj_it = rg_.adjacency.find(r);
@@ -98,6 +126,10 @@ void HierarchicalPlanner::precomputeTransfers()
     }
     if (incident.size() < 2) continue;  // dead-end: no through-paths to precompute
 
+    // Count expected transfer pairs for this room
+    const int k = static_cast<int>(incident.size());
+    total_transfer_pairs += k * (k - 1);
+
     // Resolution-adaptive budget: at 0.1 m base budget is 500 K; at finer
     // resolutions room voxel counts scale as ~(0.1/res)^2 (surface), so we
     // scale the budget by the same factor to maintain coverage.  Precompute
@@ -112,6 +144,8 @@ void HierarchicalPlanner::precomputeTransfers()
         "[HPA*] room %3d: %4d voxels, %zu edges, work=%zu — skipping "
         "(> budget %zu); stitchPath will use lazy online Dijkstra or fallback\n",
         r, room_voxels, incident.size(), work, kPrecomputeBudget);
+      ++precompute_stats_.skipped_rooms;
+      total_skipped_voxels += room_voxels;
       continue;
     }
 
@@ -160,6 +194,15 @@ void HierarchicalPlanner::precomputeTransfers()
       trans_field_[t_i] = std::move(field);
     }
 
+    // Count cached pairs for this room
+    for (size_t ii = 0; ii < incident.size(); ++ii) {
+      for (size_t jj = 0; jj < incident.size(); ++jj) {
+        if (ii == jj) continue;
+        int slot = incident[ii].first * E + incident[jj].first;
+        if (transfer_cost_[slot] < INF) ++total_cached_pairs;
+      }
+    }
+
     const auto r_t1 = std::chrono::steady_clock::now();
     const double r_ms = std::chrono::duration<double, std::milli>(r_t1 - r_t0).count();
     if (r_ms > 5.0) {
@@ -168,6 +211,24 @@ void HierarchicalPlanner::precomputeTransfers()
         r, room_voxels, incident.size(), incident.size(), r_ms);
     }
   }
+
+  // Finalize precompute stats
+  if (V_total > 0)
+    precompute_stats_.skipped_voxel_fraction =
+      static_cast<double>(total_skipped_voxels) / V_total;
+  precompute_stats_.transfer_pairs_total  = total_transfer_pairs;
+  precompute_stats_.transfer_pairs_cached = total_cached_pairs;
+  if (total_transfer_pairs > 0)
+    precompute_stats_.transfer_coverage =
+      static_cast<double>(total_cached_pairs) / total_transfer_pairs;
+
+  fprintf(stderr,
+    "[HPA*] Precompute stats: %d rooms, %d edges, skipped=%d (%.1f%% voxels), "
+    "cache=%d/%d (%.1f%%)\n",
+    R, E, precompute_stats_.skipped_rooms,
+    precompute_stats_.skipped_voxel_fraction * 100.0,
+    total_cached_pairs, total_transfer_pairs,
+    precompute_stats_.transfer_coverage * 100.0);
 
   // Build transition graph for PH-ALT-TG (always, since it's cheap)
   buildTransitionGraph();
@@ -258,8 +319,44 @@ void HierarchicalPlanner::buildTransitionGraph()
     }
   }
 
-  fprintf(stderr, "[PH-ALT-TG] Transition graph: %d nodes, %d room edges\n",
-          tg_num_nodes_, E);
+  // Count total TG edges
+  int total_tg_edges = 0;
+  for (int v = 0; v < tg_num_nodes_; ++v)
+    total_tg_edges += static_cast<int>(tg_adj_[v].size());
+  total_tg_edges /= 2;  // undirected
+
+  precompute_stats_.tg_nodes = tg_num_nodes_;
+  precompute_stats_.tg_edges = total_tg_edges;
+  precompute_stats_.tg_connected_components = countTGComponents();
+
+  fprintf(stderr,
+    "[PH-ALT-TG] Transition graph: %d nodes, %d edges, %d components\n",
+    tg_num_nodes_, total_tg_edges, precompute_stats_.tg_connected_components);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+int HierarchicalPlanner::countTGComponents() const
+{
+  if (tg_num_nodes_ == 0) return 0;
+  std::vector<bool> visited(tg_num_nodes_, false);
+  int components = 0;
+  for (int s = 0; s < tg_num_nodes_; ++s) {
+    if (visited[s]) continue;
+    ++components;
+    std::queue<int> q;
+    q.push(s);
+    visited[s] = true;
+    while (!q.empty()) {
+      int u = q.front(); q.pop();
+      for (auto & [nbr, _] : tg_adj_[u]) {
+        if (!visited[nbr]) {
+          visited[nbr] = true;
+          q.push(nbr);
+        }
+      }
+    }
+  }
+  return components;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -322,6 +419,8 @@ void HierarchicalPlanner::precomputeTGLandmarks(int num_landmarks)
       landmark_nodes[l + 1] = (best >= 0) ? best : ((l + 1) % n);
     }
   }
+
+  precompute_stats_.tg_landmarks = tg_num_landmarks_;
 
   auto t1 = std::chrono::steady_clock::now();
   double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -874,7 +973,8 @@ void HierarchicalPlanner::roomDijkstra(
 // ─────────────────────────────────────────────────────────────────────────────
 std::vector<int> HierarchicalPlanner::stitchPath(
   int start_surf, int goal_surf, const RoomRoute & route,
-  int * out_expanded, const std::unordered_set<int>* fallback_corridor) const
+  int * out_expanded, const std::unordered_set<int>* fallback_corridor,
+  QueryDiagnostics * diag) const
 {
   if (out_expanded) *out_expanded = 0;
 
@@ -921,6 +1021,10 @@ std::vector<int> HierarchicalPlanner::stitchPath(
 
   // Per-segment fallback counter
   int total_fallback_exp = 0;
+  int seg_total   = 0;  // total segments
+  int seg_cached  = 0;  // segments from cache
+  int seg_fallback = 0; // segments from online A*
+  std::string first_fallback_reason;
 
   std::vector<int> path;
   path.reserve(256);
@@ -964,8 +1068,14 @@ std::vector<int> HierarchicalPlanner::stitchPath(
         if (seg.empty()) { fprintf(stderr, "[stitch-seg0] FAIL\n"); return {}; }
         append(path, seg);
         total_fallback_exp += exp;
+        ++seg_fallback;
+        if (first_fallback_reason.empty())
+          first_fallback_reason = "endpoint_connection_missing";
+      } else {
+        ++seg_cached;
       }
     }
+    ++seg_total;
   }
 
   // ── Intermediate segments: transfer_path_ or per-room A* ─────────────────
@@ -985,12 +1095,14 @@ std::vector<int> HierarchicalPlanner::stitchPath(
     if (path.empty() || path.back() != t_enter) path.push_back(t_enter);
     if (t_enter == t_exit) { fprintf(stderr, "[stitch-mid%zu] same voxel, skip\n", i); continue; }
 
+    ++seg_total;
     const int slot = e_in * E + e_out;
-    const auto & seg_cached = transfer_path_[slot];
-    if (!seg_cached.empty()) {
-      append(path, seg_cached);
+    const auto & cached_seg = transfer_path_[slot];
+    if (!cached_seg.empty()) {
+      append(path, cached_seg);
+      ++seg_cached;
       fprintf(stderr, "[stitch-mid%zu] CACHED %zu voxels (slot=%d)\n",
-              i, seg_cached.size(), slot);
+              i, cached_seg.size(), slot);
     } else {
       fprintf(stderr, "[stitch-mid%zu] NO transfer_path_[%d], fallback A*\n", i, slot);
       int exp = 0;
@@ -1000,11 +1112,15 @@ std::vector<int> HierarchicalPlanner::stitchPath(
       if (seg.empty()) { fprintf(stderr, "[stitch-mid%zu] FAIL\n", i); return {}; }
       append(path, seg);
       total_fallback_exp += exp;
+      ++seg_fallback;
+      if (first_fallback_reason.empty())
+        first_fallback_reason = "missing_transfer_pair";
     }
   }
 
   // ── Final segment: t_enter → goal_surf ───────────────────────────────────
   {
+    ++seg_total;
     const int goal_room = route.rooms.back();
     const int e_last    = route.edges.back();
     const int t_enter   = roomSideTrans(goal_room, e_last);
@@ -1014,7 +1130,10 @@ std::vector<int> HierarchicalPlanner::stitchPath(
             goal_surf, rg_.room_labels[goal_surf], e_last);
 
     if (path.empty() || path.back() != t_enter) path.push_back(t_enter);
-    if (t_enter == goal_surf) { fprintf(stderr, "[stitch-fin] same voxel\n"); }
+    if (t_enter == goal_surf) {
+      fprintf(stderr, "[stitch-fin] same voxel\n");
+      ++seg_cached;
+    }
     else {
       bool cached = false;
       auto fit = trans_field_.find(t_enter);
@@ -1028,6 +1147,7 @@ std::vector<int> HierarchicalPlanner::stitchPath(
             std::reverse(seg.begin(), seg.end());
             append(path, seg);
             cached = true;
+            ++seg_cached;
             fprintf(stderr, "[stitch-fin] CACHED %zu voxels\n", seg.size());
           } else {
             fprintf(stderr, "[stitch-fin] walkToTarget failed\n");
@@ -1044,14 +1164,27 @@ std::vector<int> HierarchicalPlanner::stitchPath(
         if (seg.empty()) { fprintf(stderr, "[stitch-fin] FAIL\n"); return {}; }
         append(path, seg);
         total_fallback_exp += exp;
+        ++seg_fallback;
+        if (first_fallback_reason.empty())
+          first_fallback_reason = "endpoint_connection_missing";
       }
     }
   }
 
   if (out_expanded) *out_expanded = total_fallback_exp;
 
-  fprintf(stderr, "[stitch] %zu voxels | fallback_exp=%d\n",
-          path.size(), total_fallback_exp);
+  // Populate stitch diagnostics
+  if (diag) {
+    diag->stitch_segments  = seg_total;
+    diag->stitch_cached    = seg_cached;
+    diag->stitch_fallback  = seg_fallback;
+    diag->fallback_nodes   = total_fallback_exp;
+    diag->fallback_reason  = first_fallback_reason;
+    diag->cache_hit_all    = (seg_fallback == 0);
+  }
+
+  fprintf(stderr, "[stitch] %zu voxels | segs=%d (cached=%d, fallback=%d) | fallback_exp=%d\n",
+          path.size(), seg_total, seg_cached, seg_fallback, total_fallback_exp);
   return path;
 }
 
@@ -1065,7 +1198,8 @@ std::vector<int> HierarchicalPlanner::stitchPath(
 HierarchicalPlanner::RoomRoute HierarchicalPlanner::transitionGraphAstar(
   int start_surf, int goal_surf,
   const std::tuple<double, double, double> & start_world,
-  const std::tuple<double, double, double> & goal_world) const
+  const std::tuple<double, double, double> & goal_world,
+  QueryDiagnostics * diag) const
 {
   RoomRoute route;
   const int n = tg_num_nodes_;
@@ -1074,8 +1208,21 @@ HierarchicalPlanner::RoomRoute HierarchicalPlanner::transitionGraphAstar(
   const int start_room = rg_.room_labels[start_surf];
   const int goal_room  = rg_.room_labels[goal_surf];
 
+  if (diag) {
+    diag->start_room = start_room;
+    diag->goal_room  = goal_room;
+    diag->tg_nodes   = n;
+    auto sp_it = tg_room_portals_.find(start_room);
+    auto gp_it = tg_room_portals_.find(goal_room);
+    diag->start_portals = sp_it != tg_room_portals_.end()
+                            ? static_cast<int>(sp_it->second.size()) : 0;
+    diag->goal_portals  = gp_it != tg_room_portals_.end()
+                            ? static_cast<int>(gp_it->second.size()) : 0;
+  }
+
   if (start_room == goal_room) {
     route.rooms = {start_room};
+    if (diag) { diag->same_room = true; diag->room_hops = 0; }
     return route;
   }
 
@@ -1145,6 +1292,9 @@ HierarchicalPlanner::RoomRoute HierarchicalPlanner::transitionGraphAstar(
   g[VSTART] = 0.0;
   came_from[VSTART] = -1;
 
+  // Capture h_start: heuristic at first reachable start portal
+  double h_start_val = 0.0;
+
   auto start_portals_it = tg_room_portals_.find(start_room);
   if (start_portals_it != tg_room_portals_.end()) {
     for (int nid : start_portals_it->second) {
@@ -1158,16 +1308,21 @@ HierarchicalPlanner::RoomRoute HierarchicalPlanner::transitionGraphAstar(
       if (cost < g[nid]) {
         g[nid] = cost;
         came_from[nid] = VSTART;
-        open.emplace(cost + h_tg(nid), nid);
+        double h = h_tg(nid);
+        open.emplace(cost + h, nid);
+        if (h > h_start_val) h_start_val = h;
       }
     }
   }
+  if (diag) diag->h_start = h_start_val;
 
   // A* main loop
+  int tg_expanded = 0;
   while (!open.empty()) {
     auto [_, cur] = open.top(); open.pop();
     if (closed[cur]) continue;
     closed[cur] = true;
+    ++tg_expanded;
 
     if (cur == VGOAL) break;
 
@@ -1198,6 +1353,11 @@ HierarchicalPlanner::RoomRoute HierarchicalPlanner::transitionGraphAstar(
     }
   }
 
+  if (diag) {
+    diag->tg_expanded = tg_expanded;
+    diag->tg_cost     = g[VGOAL];
+  }
+
   if (g[VGOAL] >= INF) return route;
 
   // Reconstruct portal sequence (skip virtual nodes)
@@ -1225,14 +1385,18 @@ HierarchicalPlanner::RoomRoute HierarchicalPlanner::transitionGraphAstar(
     }
   }
 
+  if (diag) {
+    diag->room_hops = static_cast<int>(route.edges.size());
+  }
+
   // Verify goal_room is the last room
   if (route.rooms.back() != goal_room) {
     fprintf(stderr, "[TG-Astar] WARNING: last room %d != goal_room %d\n",
             route.rooms.back(), goal_room);
   }
 
-  fprintf(stderr, "[TG-Astar] route(%zu rooms, %zu edges): ",
-          route.rooms.size(), route.edges.size());
+  fprintf(stderr, "[TG-Astar] route(%zu rooms, %zu edges, %d expanded): ",
+          route.rooms.size(), route.edges.size(), tg_expanded);
   for (int ri : route.rooms) fprintf(stderr, "%d ", ri);
   fprintf(stderr, "| g=%.3f\n", g[VGOAL]);
 
@@ -1294,14 +1458,20 @@ HierarchicalPath HierarchicalPlanner::plan(
 
   // ── Step 2: Room-level routing ────────────────────────────────────────────
   auto room_t0 = std::chrono::steady_clock::now();
+  QueryDiagnostics & diag = result.diag;
+  diag.start_room = start_room;
+  diag.goal_room  = goal_room;
+  diag.same_room  = (start_room == goal_room);
+
   const RoomRoute route = use_ph_alt_
-    ? transitionGraphAstar(start_surf, goal_surf, start_world, goal_world)
+    ? transitionGraphAstar(start_surf, goal_surf, start_world, goal_world, &diag)
     : roomAstar(start_room, goal_room, start_surf, goal_surf,
                 start_world, goal_world, floor_seq, robot_diameter_m);
   const std::vector<int> & room_seq = route.rooms;
   auto room_t1 = std::chrono::steady_clock::now();
   result.room_planning_ms =
     std::chrono::duration<double, std::milli>(room_t1 - room_t0).count();
+  diag.tg_astar_ms = result.room_planning_ms;  // TG A* = room planning step
 
   if (room_seq.empty()) {
     // Debug: print adjacency sizes for start/goal rooms
@@ -1361,7 +1531,11 @@ HierarchicalPath HierarchicalPlanner::plan(
   if (room_seq.size() >= 2 && use_stitch_) {
     // Build corridor set for fallback A* segments (same as corridor A*)
     std::unordered_set<int> stitch_corridor(room_seq.begin(), room_seq.end());
-    all_surf_path = stitchPath(start_surf, goal_surf, route, &total_expanded, &stitch_corridor);
+    auto stitch_t0 = std::chrono::steady_clock::now();
+    all_surf_path = stitchPath(start_surf, goal_surf, route, &total_expanded,
+                               &stitch_corridor, &diag);
+    auto stitch_t1 = std::chrono::steady_clock::now();
+    diag.stitch_ms = std::chrono::duration<double, std::milli>(stitch_t1 - stitch_t0).count();
     if (!all_surf_path.empty()) used_stitch = true;
   }
 

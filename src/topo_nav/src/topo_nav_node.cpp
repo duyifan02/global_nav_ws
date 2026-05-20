@@ -357,6 +357,21 @@ private:
     res->memory_usage_bytes  = static_cast<int64_t>(
       voxel_map_->getConstructedSceneMemoryUsageBytes());
 
+    // Precompute diagnostics
+    const auto & ps = planner_->getPrecomputeStats();
+    res->tg_nodes                = ps.tg_nodes;
+    res->tg_edges                = ps.tg_edges;
+    res->tg_landmarks            = ps.tg_landmarks;
+    res->tg_connected_components = ps.tg_connected_components;
+    res->max_room_voxels         = ps.max_room_voxels;
+    res->max_room_portals        = ps.max_room_portals;
+    res->max_room_fraction       = ps.max_room_fraction;
+    res->skipped_rooms           = ps.skipped_rooms;
+    res->skipped_voxel_fraction  = ps.skipped_voxel_fraction;
+    res->transfer_pairs_total    = ps.transfer_pairs_total;
+    res->transfer_pairs_cached   = ps.transfer_pairs_cached;
+    res->transfer_coverage       = ps.transfer_coverage;
+
     RCLCPP_INFO(get_logger(),
       "BuildTopoMap [%s]: %d rooms (%d stair, %d corr), %d floors, "
       "%.1f ms (PH %.1f + seg %.1f + precomp %.1f ms)",
@@ -457,6 +472,27 @@ private:
     res->voxel_planning_ms    = hp.voxel_planning_ms;
     res->path_length_m        = hp.path_length_m;
     res->voxel_nodes_expanded = static_cast<int64_t>(hp.voxel_nodes_expanded);
+
+    // Per-query diagnostics
+    const auto & d = hp.diag;
+    res->diag_start_room       = d.start_room;
+    res->diag_goal_room        = d.goal_room;
+    res->diag_same_room        = d.same_room;
+    res->diag_room_hops        = d.room_hops;
+    res->diag_tg_expanded      = d.tg_expanded;
+    res->diag_tg_astar_ms      = d.tg_astar_ms;
+    res->diag_h_start          = d.h_start;
+    res->diag_tg_cost          = d.tg_cost;
+    res->diag_stitch_segments  = d.stitch_segments;
+    res->diag_stitch_cached    = d.stitch_cached;
+    res->diag_stitch_fallback  = d.stitch_fallback;
+    res->diag_stitch_ms        = d.stitch_ms;
+    res->diag_fallback_nodes   = d.fallback_nodes;
+    res->diag_fallback_reason  = d.fallback_reason;
+    res->diag_cache_hit_all    = d.cache_hit_all;
+    res->diag_tg_nodes         = d.tg_nodes;
+    res->diag_start_portals    = d.start_portals;
+    res->diag_goal_portals     = d.goal_portals;
 
     for (int r : hp.room_sequence)  res->room_sequence.push_back(r);
     for (int f : hp.floor_sequence) res->floor_sequence.push_back(f);
