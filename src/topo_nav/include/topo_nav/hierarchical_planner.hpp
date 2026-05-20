@@ -169,7 +169,7 @@ private:
 
   /// Step 3 (new): assemble surface path from precomputed segments.
   ///
-  /// For each room segment, prefers O(1) trans_field_/transfer_path_ lookup.
+  /// For each room segment, prefers O(1) trans_field_ parent-chain walk.
   /// Falls back to single-room voxelAstar for any room whose trans_field_ was
   /// skipped during precompute (> kMaxEdgesForDijkstra edges).
   ///
@@ -229,16 +229,16 @@ private:
   /// Precompute all pairwise intra-room transfers.  Called by setTopoMap().
   void precomputeTransfers();
 
-  /// Flat transfer table indexed by [e_in * transfer_E_ + e_out].
+  /// Flat transfer cost table indexed by [e_in * transfer_E_ + e_out].
   ///
   /// transfer_E_ = total number of room edges (rg_.edges.size()).
-  /// transfer_cost_[e_in * E + e_out]  = actual voxel path cost (INF = no path).
-  /// transfer_path_[e_in * E + e_out]  = surface-graph indices (empty = no path).
+  /// transfer_cost_[e_in * E + e_out] = actual voxel path cost (INF = no path).
+  /// Path reconstruction uses trans_field_ parent-chain walks instead of
+  /// materializing all pair paths (root-Dijkstra policy, saves O(k²|R|) memory).
   ///
-  /// Space: E² × (8 B cost + sizeof(vector) path) ≈ 40 KB for E=50.
+  /// Space: E² × 8 B ≈ 20 KB for E=50.
   int transfer_E_ = 0;
-  std::vector<double>           transfer_cost_;   ///< [e_in * E + e_out], INF = no path
-  std::vector<std::vector<int>> transfer_path_;   ///< [e_in * E + e_out], empty = no path
+  std::vector<double> transfer_cost_;   ///< [e_in * E + e_out], INF = no path
 
   /// Flat minimum exit cost table indexed by [room_id * transfer_E_ + edge_out].
   /// Stores the minimum actual voxel traversal cost within room r to reach

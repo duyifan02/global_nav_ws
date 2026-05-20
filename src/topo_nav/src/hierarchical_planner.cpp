@@ -39,7 +39,6 @@ void HierarchicalPlanner::setTopoMap(const RoomGraph & rg, const FloorGraph & fg
   // ── Precompute HPA* transfer table ────────────────────────────────────────
   transfer_E_          = 0;
   transfer_cost_.clear();
-  transfer_path_.clear();
   min_exit_cost_flat_.clear();
   if (!skip_precompute) {
     precomputeTransfers();
@@ -71,9 +70,9 @@ void HierarchicalPlanner::precomputeTransfers()
 
   const double INF = std::numeric_limits<double>::infinity();
 
-  // Flat tables: E×E for transfer, R×E for min exit cost
+  // Flat tables: E×E for transfer cost, R×E for min exit cost
+  // NOTE: transfer_path_ eliminated — use trans_field_ parent-chain walks instead
   transfer_cost_.assign(static_cast<size_t>(E) * E, INF);
-  transfer_path_.resize(static_cast<size_t>(E) * E);  // default empty vectors
   min_exit_cost_flat_.assign(static_cast<size_t>(R) * E, INF);
 
   trans_field_.clear();
@@ -130,19 +129,19 @@ void HierarchicalPlanner::precomputeTransfers()
     const int k = static_cast<int>(incident.size());
     total_transfer_pairs += k * (k - 1);
 
-    // Resolution-adaptive budget: at 0.1 m base budget is 500 K; at finer
-    // resolutions room voxel counts scale as ~(0.1/res)^2 (surface), so we
-    // scale the budget by the same factor to maintain coverage.  Precompute
-    // is offline, so longer build times at fine resolutions are acceptable.
+    // Root-Dijkstra budget: since we only store parent trees (not pair paths),
+    // the budget covers runtime only: k Dijkstras × O(|room|) each.
+    // Base budget 5M at 0.1m; resolution-adaptive scaling for finer grids.
+    // This is 10× the old budget, eliminating most room skips.
     const double res = vmap_->getResolution();
     const double scale = std::max(1.0, (0.1 / res) * (0.1 / res));
-    const size_t kPrecomputeBudget = static_cast<size_t>(500000.0 * scale);
+    const size_t kPrecomputeBudget = static_cast<size_t>(5000000.0 * scale);
     const int room_voxels = room_voxel_count[r];
     const size_t work = incident.size() * static_cast<size_t>(room_voxels);
     if (work > kPrecomputeBudget) {
       fprintf(stderr,
         "[HPA*] room %3d: %4d voxels, %zu edges, work=%zu — skipping "
-        "(> budget %zu); stitchPath will use lazy online Dijkstra or fallback\n",
+        "(> budget %zu); stitchPath will use online fallback\n",
         r, room_voxels, incident.size(), work, kPrecomputeBudget);
       ++precompute_stats_.skipped_rooms;
       total_skipped_voxels += room_voxels;
@@ -171,19 +170,7 @@ void HierarchicalPlanner::precomputeTransfers()
         const int slot = ei * E + ej;
         transfer_cost_[slot] = cost;
 
-        // Reconstruct path from parent chain
-        if (cost < INF) {
-          std::vector<int> path;
-          int cur = t_j;
-          while (cur >= 0) {
-            path.push_back(cur);
-            if (cur == t_i) break;
-            auto pit = field.parent.find(cur);
-            cur = (pit != field.parent.end()) ? pit->second : -1;
-          }
-          std::reverse(path.begin(), path.end());
-          transfer_path_[slot] = std::move(path);
-        }
+        // Path reconstruction deferred to stitchPath() via trans_field_ parent walk
 
         // Track minimum exit cost for (room r, exit edge ej)
         double & mc = min_exit_cost_flat_[r * E + ej];
@@ -298,6 +285,8 @@ void HierarchicalPlanner::buildTransitionGraph()
   }
 
   // Intra-room edges: between portals of the same room
+  // Use precomputed transfer_cost_ (Dijkstra shortest-path cost) directly
+  const double INF_tg = std::numeric_limits<double>::infinity();
   for (auto & [room_id, portal_nodes] : tg_room_portals_) {
     for (size_t i = 0; i < portal_nodes.size(); ++i) {
       for (size_t j = 0; j < portal_nodes.size(); ++j) {
@@ -308,13 +297,10 @@ void HierarchicalPlanner::buildTransitionGraph()
         int eb = tg_nodes_[nb].edge_idx;
 
         int slot = ea * E + eb;
-        const auto & tp = transfer_path_[slot];
-        if (tp.empty()) continue;
+        double cost = transfer_cost_[slot];
+        if (cost >= INF_tg || cost <= 0.0) continue;
 
-        double geo_len = computePathLength(tp);
-        if (geo_len <= 0.0) continue;
-
-        tg_adj_[na].emplace_back(nb, geo_len);
+        tg_adj_[na].emplace_back(nb, cost);
       }
     }
   }
@@ -960,8 +946,8 @@ void HierarchicalPlanner::roomDijkstra(
 //     Fallback: voxelAstar restricted to start_room.
 //
 //   Intermediate (room r, entry_edge → exit_edge):
-//     Try transfer_path_[e_in * E + e_out].
-//     Fallback: voxelAstar restricted to room r.
+//     Try trans_field_[t_enter] or trans_field_[t_exit] parent-chain walk.
+//     Fallback: voxelAstar (unrestricted).
 //
 //   Final (last transition → goal_surf in goal_room):
 //     Try trans_field_[t_enter] parent-chain walk from goal_surf (reversed).
@@ -1078,7 +1064,7 @@ std::vector<int> HierarchicalPlanner::stitchPath(
     ++seg_total;
   }
 
-  // ── Intermediate segments: transfer_path_ or per-room A* ─────────────────
+  // ── Intermediate segments: trans_field_ parent-chain walk ─────────────────
   for (size_t i = 1; i + 1 < route.rooms.size(); ++i) {
     const int r       = route.rooms[i];
     const int e_in    = route.edges[i - 1];
@@ -1096,15 +1082,39 @@ std::vector<int> HierarchicalPlanner::stitchPath(
     if (t_enter == t_exit) { fprintf(stderr, "[stitch-mid%zu] same voxel, skip\n", i); continue; }
 
     ++seg_total;
-    const int slot = e_in * E + e_out;
-    const auto & cached_seg = transfer_path_[slot];
-    if (!cached_seg.empty()) {
-      append(path, cached_seg);
-      ++seg_cached;
-      fprintf(stderr, "[stitch-mid%zu] CACHED %zu voxels (slot=%d)\n",
-              i, cached_seg.size(), slot);
-    } else {
-      fprintf(stderr, "[stitch-mid%zu] NO transfer_path_[%d], fallback A*\n", i, slot);
+    bool cached = false;
+
+    // Try trans_field_[t_enter]: walk from t_exit back to t_enter via parent chain
+    auto fit = trans_field_.find(t_enter);
+    if (fit != trans_field_.end() && fit->second.dist.count(t_exit) > 0) {
+      auto seg = walkToTarget(fit->second, t_exit, t_enter);
+      if (!seg.empty()) {
+        std::reverse(seg.begin(), seg.end());
+        append(path, seg);
+        cached = true;
+        ++seg_cached;
+        fprintf(stderr, "[stitch-mid%zu] CACHED via trans_field_[%d] %zu voxels\n",
+                i, t_enter, seg.size());
+      }
+    }
+
+    // Fallback: try trans_field_[t_exit] (walk from t_enter toward t_exit)
+    if (!cached) {
+      auto fit2 = trans_field_.find(t_exit);
+      if (fit2 != trans_field_.end() && fit2->second.dist.count(t_enter) > 0) {
+        auto seg = walkToTarget(fit2->second, t_enter, t_exit);
+        if (!seg.empty()) {
+          append(path, seg);
+          cached = true;
+          ++seg_cached;
+          fprintf(stderr, "[stitch-mid%zu] CACHED via trans_field_[%d] %zu voxels\n",
+                  i, t_exit, seg.size());
+        }
+      }
+    }
+
+    if (!cached) {
+      fprintf(stderr, "[stitch-mid%zu] no trans_field_ coverage, fallback A*\n", i);
       int exp = 0;
       auto seg = voxelAstar(t_enter, t_exit, -1, &exp, fallback_corridor);
       fprintf(stderr, "[stitch-mid%zu] FALLBACK A* → %zu voxels, exp=%d\n",
