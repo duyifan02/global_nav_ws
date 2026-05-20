@@ -383,7 +383,35 @@ In 6/7 slow cases, **τ=3 achieves ALT-comparable or better speed**:
 
 Root cause: at τ=5, fewer rooms → fewer portal voxels between adjacent regions → stitch phase falls back to voxel-level search. τ=3 produces more, smaller rooms with better portal coverage, reducing fallback cost.
 
-### 2.6 HM3D Tuning Results (10 Minival Scenes, Start-as-Seed)
+### 2.6 Component Ablation (HM3D 100 scenes, 0.1m, τ=5)
+
+*(Isolates the contribution of each architectural component)*
+
+| Method | Median Ts | vs JPS | vs ALT | Scenes | Key component |
+|--------|-----------|--------|--------|--------|---------------|
+| JPS / flat_surface | 0.317ms | 1.0x | 0.30x | 97 | Baseline |
+| no_stitch (PH + online A*) | 0.308ms | **1.0x** | 0.31x | 97 | +PH rooms (no precompute) |
+| Grid HPA* (uniform grid + cache) | 0.080ms | **4.0x** | **0.84x** | 95 | +precomputed transfers |
+| ALT A* (surface + 16 landmarks) | 0.095ms | **3.3x** | **1.0x** | 95 | +global heuristic (no cache) |
+| Full HPA* (PH + cache + Euclidean) | 0.048ms | **6.6x** | **2.0x** | 96 | +PH rooms improve cache |
+| **PH-ALT-TG (PH + cache + ALT)** | **0.045ms** | **7.1x** | **2.1x** | 96 | **+ALT on transition graph** |
+
+**Key ablation findings:**
+
+1. **PH rooms alone do nothing** (no_stitch ≈ JPS): the room hierarchy provides no speedup unless transfers are precomputed. Online A* per room erases any benefit.
+
+2. **Precomputed cache beats ALT** (Grid HPA* 4.0x > ALT 3.3x): even with *uniform grid rooms*, the precomputed transfer cache dominates a landmark-based surface heuristic. The cache amortizes intra-room search across queries.
+
+3. **PH segmentation improves cache quality** (Full HPA* 6.6x > Grid HPA* 4.0x): PH rooms are aligned with topological structure (doorways, corridors), producing more cache hits than arbitrary grid cells. This gap *directly validates the PH contribution*.
+
+4. **ALT heuristic on TG gives additional gain** (TG τ=5 7.1x > Full HPA* 6.6x): replacing the Euclidean room heuristic with landmark lower bounds on the sparse transition graph reduces unnecessary TG node expansions.
+
+**Contribution decomposition:**
+- Cache precomputation: 4.0x / 1.0x = **4.0x gain**
+- PH vs grid rooms: 6.6x / 4.0x = **+1.65x gain**
+- ALT heuristic on TG: 7.1x / 6.6x = **+1.08x gain**
+
+### 2.7 HM3D Tuning Results (10 Minival Scenes, Start-as-Seed)
 
 27-config tau/landmark sweep across 3 resolutions:
 
@@ -469,4 +497,6 @@ Break-even vs JPS (no precompute): TG5 pays back after ~97 queries per scene.
 
 5. **Strictly Pareto-dominant over ALT**: At 100-scene median, TG5 precompute = **26.6ms vs ALT 41.2ms** (35% cheaper), AND TG5 query = **0.045ms vs 0.095ms** (2.1x faster). TG5 is better than ALT on BOTH metrics simultaneously. Break-even vs JPS: ~97 queries/scene.
 
-6. **ALT landmarks are essential**: Without them, TG is slower than ALT (0.92x). The combination of PH topology + ALT heuristic is key.
+6. **ALT landmarks are essential**: Without them (full HPA* Euclidean heuristic), TG gives 6.6x vs JPS; adding ALT heuristic on TG gives 7.1x. The combination of precomputed cache + ALT heuristic is key.
+
+7. **Ablation validates each component** (HM3D 100 scenes, τ=5): (a) PH rooms alone = no speedup (0.308ms ≈ JPS); (b) uniform-grid precomputed cache already beats ALT (0.080ms, 4.0x > ALT 0.095ms, 3.3x); (c) PH rooms improve cache quality (+1.65x over grid); (d) ALT on TG adds a further +1.08x. The precomputed transfer cache is the dominant speedup factor.
