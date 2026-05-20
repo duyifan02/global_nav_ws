@@ -411,6 +411,20 @@ Root cause: at τ=5, fewer rooms → fewer portal voxels between adjacent region
 - PH vs grid rooms: 6.6x / 4.0x = **+1.65x gain**
 - ALT heuristic on TG: 7.1x / 6.6x = **+1.08x gain**
 
+**Path quality** (median overhead vs JPS reference, 94–96 common scenes):
+| Method | Median Ts | Speedup | Path overhead | Notes |
+|--------|-----------|---------|---------------|-------|
+| flat_surface / JPS | 0.310ms | 1.0x | +0.0% | Near-optimal |
+| no_stitch τ=5 | 0.308ms | 1.0x | -0.0% | Online A* = near-optimal |
+| ALT A* | 0.095ms | 3.3x | **-0.3%** | Near-optimal (admissible heuristic) |
+| Grid HPA* τ=5 | 0.080ms | 4.0x | **+39.1%** | Grid boundaries cause detours |
+| Full HPA* τ=5 | 0.048ms | 6.6x | +12.4% | PH reduces detours vs grid |
+| TG τ=3 | 0.050ms | 6.3x | **+9.8%** | Best path quality among TG |
+| TG τ=5 | 0.045ms | 7.1x | +12.0% | Slightly more detour |
+| TG τ=4 | 0.050ms | 6.4x | +14.3% | |
+
+**Key insight**: PH segmentation matters for *path quality* too — +12% overhead vs +39% for grid. ALT A* delivers near-optimal paths at 3.3x speedup; TG τ=3 delivers the best speed-quality tradeoff (6.3x speedup, +9.8% overhead).
+
 ### 2.7 HM3D Tuning Results (10 Minival Scenes, Start-as-Seed)
 
 27-config tau/landmark sweep across 3 resolutions:
