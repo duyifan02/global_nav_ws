@@ -551,7 +551,7 @@ class AutoBenchmarkNode(Node):
         # Add scene-level precompute stats
         if topo_extra:
             for k in ('tg_nodes', 'tg_edges', 'tg_connected_components',
-                       'skipped_rooms', 'transfer_coverage'):
+                       'skipped_rooms', 'transfer_coverage', 'selected_tau'):
                 if k in topo_extra:
                     result[k] = topo_extra[k]
         return result
