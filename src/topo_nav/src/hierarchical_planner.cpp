@@ -1538,6 +1538,68 @@ HierarchicalPath HierarchicalPlanner::plan(
   std::vector<int> all_surf_path;
   bool used_stitch = false;
 
+  // ── Same-room shortcut: use trans_field_ for O(path) reconstruction ──────
+  if (room_seq.size() == 1 && use_stitch_) {
+    // Try to find start and goal in a common portal's Dijkstra field
+    auto portal_it = tg_room_portals_.find(start_room);
+    if (portal_it != tg_room_portals_.end()) {
+      double best_cost = std::numeric_limits<double>::infinity();
+      std::vector<int> best_path;
+      for (int nid : portal_it->second) {
+        int portal_surf = tg_nodes_[nid].surf_idx;
+        auto fit = trans_field_.find(portal_surf);
+        if (fit == trans_field_.end()) continue;
+        const auto & field = fit->second;
+        auto ds = field.dist.find(start_surf);
+        auto dg = field.dist.find(goal_surf);
+        if (ds == field.dist.end() || dg == field.dist.end()) continue;
+        double cost = ds->second + dg->second;
+        if (cost < best_cost) {
+          // Reconstruct: start → portal → goal
+          // Walk start → portal
+          std::vector<int> seg_s;
+          int cur = start_surf;
+          for (int guard = 0; guard < 200000; ++guard) {
+            seg_s.push_back(cur);
+            if (cur == portal_surf) break;
+            auto pit = field.parent.find(cur);
+            if (pit == field.parent.end()) { seg_s.clear(); break; }
+            cur = pit->second;
+          }
+          if (seg_s.empty()) continue;
+          // Walk goal → portal, then reverse
+          std::vector<int> seg_g;
+          cur = goal_surf;
+          for (int guard = 0; guard < 200000; ++guard) {
+            seg_g.push_back(cur);
+            if (cur == portal_surf) break;
+            auto pit = field.parent.find(cur);
+            if (pit == field.parent.end()) { seg_g.clear(); break; }
+            cur = pit->second;
+          }
+          if (seg_g.empty()) continue;
+          std::reverse(seg_g.begin(), seg_g.end());
+          // Concatenate: seg_s + seg_g (skip duplicate portal)
+          std::vector<int> full_path = seg_s;
+          full_path.insert(full_path.end(), seg_g.begin() + 1, seg_g.end());
+          best_cost = cost;
+          best_path = std::move(full_path);
+        }
+      }
+      if (!best_path.empty()) {
+        all_surf_path = std::move(best_path);
+        used_stitch = true;
+        diag.stitch_segments = 1;
+        diag.stitch_cached = 1;
+        diag.stitch_fallback = 0;
+        diag.cache_hit_all = true;
+        fprintf(stderr, "[same-room] shortcut via trans_field_: %zu voxels\n",
+                all_surf_path.size());
+      }
+    }
+    // If no trans_field_ coverage, fall through to voxelAstar below
+  }
+
   if (room_seq.size() >= 2 && use_stitch_) {
     // Build corridor set for fallback A* segments (same as corridor A*)
     std::unordered_set<int> stitch_corridor(room_seq.begin(), room_seq.end());
@@ -1550,16 +1612,8 @@ HierarchicalPath HierarchicalPlanner::plan(
   }
 
   if (all_surf_path.empty()) {
-    // Fallback: original corridor A* (also handles single-room case).
-    if (room_seq.size() <= 1) {
-      all_surf_path = voxelAstar(start_surf, goal_surf, -1, &total_expanded);
-    } else {
-      std::unordered_set<int> corridor(room_seq.begin(), room_seq.end());
-      all_surf_path = voxelAstar(start_surf, goal_surf, -1, &total_expanded, &corridor);
-      if (all_surf_path.empty()) {
-        all_surf_path = voxelAstar(start_surf, goal_surf, -1, &total_expanded);
-      }
-    }
+    // Fallback: unrestricted voxel A* (handles single-room + any failed stitch)
+    all_surf_path = voxelAstar(start_surf, goal_surf, -1, &total_expanded);
   }
 
   auto voxel_t1 = std::chrono::steady_clock::now();
