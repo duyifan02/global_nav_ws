@@ -338,6 +338,18 @@ void HierarchicalPlanner::buildTransitionGraph()
   precompute_stats_.tg_edges = total_tg_edges;
   precompute_stats_.tg_connected_components = countTGComponents();
 
+  // P0.1: Compute portal statistics
+  precompute_stats_.num_portals = tg_num_nodes_;  // each TG node is a portal
+  if (E > 0) {
+    int total_portals_per_side = 0;
+    for (int eidx = 0; eidx < E; ++eidx) {
+      total_portals_per_side += static_cast<int>(tg_edge_portals_[eidx].nodes_i.size());
+      total_portals_per_side += static_cast<int>(tg_edge_portals_[eidx].nodes_j.size());
+    }
+    precompute_stats_.portal_k_effective =
+      static_cast<double>(total_portals_per_side) / (2.0 * E);
+  }
+
   fprintf(stderr,
     "[PH-ALT-TG] Transition graph: %d nodes, %d edges, %d components\n",
     tg_num_nodes_, total_tg_edges, precompute_stats_.tg_connected_components);
@@ -1472,6 +1484,7 @@ HierarchicalPath HierarchicalPlanner::plan(
   result.snap_ms = std::chrono::duration<double, std::milli>(snap_t1 - snap_t0).count();
   if (start_surf < 0 || goal_surf < 0) {
     result.message = "Cannot snap start/goal to surface.";
+    result.failure_reason = "snap_failed";
     return result;
   }
 
@@ -1482,6 +1495,7 @@ HierarchicalPath HierarchicalPlanner::plan(
 
   if (start_room < 0 || goal_room < 0 || start_floor < 0 || goal_floor < 0) {
     result.message = "Start or goal not assigned to a room/floor.";
+    result.failure_reason = "start_goal_disconnected";
     return result;
   }
 
@@ -1537,6 +1551,7 @@ HierarchicalPath HierarchicalPlanner::plan(
     auto fallback_t1 = std::chrono::steady_clock::now();
     if (fb_path.empty()) {
       result.message = "Room-level routing failed and voxel fallback also failed.";
+      result.failure_reason = "tg_astar_failed";
       return result;
     }
     result.voxel_planning_ms =
@@ -1647,7 +1662,11 @@ HierarchicalPath HierarchicalPlanner::plan(
 
   if (all_surf_path.empty()) {
     // Fallback: unrestricted voxel A* (handles single-room + any failed stitch)
+    auto fb_t0 = std::chrono::steady_clock::now();
     all_surf_path = voxelAstar(start_surf, goal_surf, -1, &total_expanded);
+    auto fb_t1 = std::chrono::steady_clock::now();
+    diag.fallback_astar_ms =
+      std::chrono::duration<double, std::milli>(fb_t1 - fb_t0).count();
   }
 
   auto voxel_t1 = std::chrono::steady_clock::now();
@@ -1657,6 +1676,7 @@ HierarchicalPath HierarchicalPlanner::plan(
 
   if (all_surf_path.empty()) {
     result.message = "Step 3 failed (stitch + corridor A* both empty).";
+    result.failure_reason = "stitch_failed";
     return result;
   }
   if (used_stitch) {
@@ -1673,6 +1693,12 @@ HierarchicalPath HierarchicalPlanner::plan(
   }
 
   result.path_length_m = computePathLength(all_surf_path);
+
+  // P0.2: Validate path
+  validatePath(all_surf_path, start_surf, goal_surf, result);
+  if (!result.path_valid) {
+    result.failure_reason = "invalid_path";
+  }
 
   auto total_t1 = std::chrono::steady_clock::now();
   result.total_planning_ms =
@@ -1745,6 +1771,86 @@ HierarchicalPath HierarchicalPlanner::planFlat(
   result.success = true;
   result.message = "OK (flat surface A*)";
   return result;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P0.2: Path validity checker
+// ─────────────────────────────────────────────────────────────────────────────
+void HierarchicalPlanner::validatePath(
+  const std::vector<int> & surf_path,
+  int start_surf, int goal_surf,
+  HierarchicalPath & result) const
+{
+  const auto & graph = vmap_->getSurfaceGraph();
+  const int N = static_cast<int>(surf_path.size());
+
+  if (N == 0) {
+    result.path_valid = false;
+    result.invalid_reason = "empty_path";
+    return;
+  }
+
+  // Check start/goal proximity (within 1 voxel)
+  if (surf_path.front() != start_surf) {
+    const auto & a = graph[surf_path.front()];
+    const auto & b = graph[start_surf];
+    int dx = std::abs(a.x - b.x), dy = std::abs(a.y - b.y), dz = std::abs(a.z - b.z);
+    if (dx > 1 || dy > 1 || dz > 1) {
+      result.path_valid = false;
+      result.invalid_reason = "start_mismatch";
+      return;
+    }
+  }
+  if (surf_path.back() != goal_surf) {
+    const auto & a = graph[surf_path.back()];
+    const auto & b = graph[goal_surf];
+    int dx = std::abs(a.x - b.x), dy = std::abs(a.y - b.y), dz = std::abs(a.z - b.z);
+    if (dx > 1 || dy > 1 || dz > 1) {
+      result.path_valid = false;
+      result.invalid_reason = "goal_mismatch";
+      return;
+    }
+  }
+
+  // Check 26-neighbor connectivity and surface membership
+  int bad_edges = 0;
+  double max_step = 0.0;
+  const int graph_size = static_cast<int>(graph.size());
+
+  for (int i = 0; i < N; ++i) {
+    // Surface membership
+    if (surf_path[i] < 0 || surf_path[i] >= graph_size) {
+      result.path_valid = false;
+      result.invalid_reason = "out_of_bounds_idx";
+      result.invalid_edge_count = bad_edges;
+      return;
+    }
+    if (i == 0) continue;
+
+    const auto & a = graph[surf_path[i - 1]];
+    const auto & b = graph[surf_path[i]];
+    int dx = std::abs(b.x - a.x);
+    int dy = std::abs(b.y - a.y);
+    int dz = std::abs(b.z - a.z);
+    double step = std::sqrt(static_cast<double>(dx * dx + dy * dy + dz * dz));
+    if (step > max_step) max_step = step;
+
+    // 26-neighbor check: max displacement in each axis is 1
+    if (dx > 1 || dy > 1 || dz > 1) {
+      ++bad_edges;
+    }
+  }
+
+  result.invalid_edge_count = bad_edges;
+  result.max_step_distance_voxels = max_step;
+
+  if (bad_edges > 0) {
+    result.path_valid = false;
+    result.invalid_reason = "non_adjacent_step";
+  } else {
+    result.path_valid = true;
+    result.invalid_reason.clear();
+  }
 }
 
 }  // namespace topo_nav

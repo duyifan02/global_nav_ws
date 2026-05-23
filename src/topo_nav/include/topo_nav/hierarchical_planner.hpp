@@ -46,6 +46,9 @@ struct QueryDiagnostics
   int    tg_nodes          = 0;     ///< |V_T| at query time
   int    start_portals     = 0;     ///< Portals in start room
   int    goal_portals      = 0;     ///< Portals in goal room
+
+  // ── P0.3: Fallback timing ──
+  double fallback_astar_ms = 0.0;   ///< Time spent in fallback voxelAstar segments
 };
 
 /// Scene-level precompute statistics (populated during BuildTopoMap).
@@ -53,6 +56,8 @@ struct PrecomputeStats
 {
   int    num_rooms             = 0;
   int    num_edges             = 0;
+  int    num_portals           = 0;    ///< Total portal voxels across all edges
+  double portal_k_effective    = 0.0;  ///< Mean portals per side per edge
   int    tg_nodes              = 0;
   int    tg_edges              = 0;
   int    tg_landmarks          = 0;
@@ -86,6 +91,15 @@ struct HierarchicalPath
 
   double path_length_m      = 0.0;
   int voxel_nodes_expanded  = 0;
+
+  // ── P0.4: Failure reason classification ──
+  std::string failure_reason = "ok";   ///< ok, snap_failed, tg_astar_failed, stitch_failed, etc.
+
+  // ── P0.2: Path validity ──
+  bool path_valid               = false;
+  std::string invalid_reason;
+  int  invalid_edge_count       = 0;
+  double max_step_distance_voxels = 0.0;
 
   QueryDiagnostics diag;  ///< Detailed per-query diagnostics
 };
@@ -229,6 +243,12 @@ private:
     bool snap) const;
 
   double computePathLength(const std::vector<int> & surf_indices) const;
+
+  /// Validate stitched path: 26-neighbor connectivity, surface membership.
+  /// Populates result.path_valid, result.invalid_reason, etc.
+  void validatePath(const std::vector<int> & surf_path,
+                    int start_surf, int goal_surf,
+                    HierarchicalPath & result) const;
 
   // ── HPA* precomputation ───────────────────────────────────────────────────
 

@@ -103,6 +103,16 @@ RESULT_COLS = [
     'diag_fallback_nodes',
     'diag_fallback_reason',
     'diag_cache_hit_all',
+    # P0.3: Per-query timing breakdown
+    'diag_snap_ms',
+    'diag_fallback_astar_ms',
+    # P0.4: Failure reason
+    'failure_reason',
+    # P0.2: Path validity
+    'path_valid',
+    'invalid_reason',
+    'invalid_edge_count',
+    'max_step_distance_voxels',
     # Scene-level precompute stats
     'tg_nodes',
     'tg_edges',
@@ -110,6 +120,16 @@ RESULT_COLS = [
     'skipped_rooms',
     'transfer_coverage',
     'selected_tau',
+    # P0.1: Additional scene-level fields
+    'num_room_edges',
+    'num_portals',
+    'max_portals_per_edge',
+    'portal_k_effective',
+    'tau_mode',
+    # P0.3: Build timing breakdown
+    'tau_selection_time_ms',
+    'tg_build_time_ms',
+    'alt_landmark_time_ms',
 ]
 
 ALL_COLS = [c for c in INPUT_COLS if c != 'planning_time_ms'] + RESULT_COLS
@@ -352,6 +372,16 @@ class AutoBenchmarkNode(Node):
                 'skipped_rooms': int(getattr(response, 'skipped_rooms', 0)),
                 'transfer_coverage': float(getattr(response, 'transfer_coverage', 0.0)),
                 'selected_tau': float(getattr(response, 'selected_tau', 0.0)),
+                # P0.1: Additional scene-level fields
+                'num_room_edges': int(getattr(response, 'num_room_edges', 0)),
+                'num_portals': int(getattr(response, 'num_portals', 0)),
+                'max_portals_per_edge': int(getattr(response, 'max_portals_per_edge', 1)),
+                'portal_k_effective': float(getattr(response, 'portal_k_effective', 0.0)),
+                'tau_mode': str(getattr(response, 'tau_mode', '')),
+                # P0.3: Build timing breakdown
+                'tau_selection_time_ms': float(getattr(response, 'tau_selection_time_ms', 0.0)),
+                'tg_build_time_ms': float(getattr(response, 'tg_build_time_ms', 0.0)),
+                'alt_landmark_time_ms': float(getattr(response, 'alt_landmark_time_ms', 0.0)),
             }
             tg_info = (f', TG={extra["tg_nodes"]}n/{extra["tg_edges"]}e '
                        f'skip={extra["skipped_rooms"]} cov={extra["transfer_coverage"]:.1%}'
@@ -444,6 +474,16 @@ class AutoBenchmarkNode(Node):
             'diag_fallback_nodes':   _get_diag(response, 'diag_fallback_nodes', 0),
             'diag_fallback_reason':  _get_diag(response, 'diag_fallback_reason', ''),
             'diag_cache_hit_all':    _get_diag(response, 'diag_cache_hit_all', True),
+            # P0.3: Per-query timing breakdown
+            'diag_snap_ms':          _get_diag(response, 'diag_snap_ms', 0.0),
+            'diag_fallback_astar_ms': _get_diag(response, 'diag_fallback_astar_ms', 0.0),
+            # P0.4: Failure reason
+            'failure_reason':        _get_diag(response, 'failure_reason', 'ok'),
+            # P0.2: Path validity
+            'path_valid':            _get_diag(response, 'path_valid', False),
+            'invalid_reason':        _get_diag(response, 'invalid_reason', ''),
+            'invalid_edge_count':    _get_diag(response, 'invalid_edge_count', 0),
+            'max_step_distance_voxels': _get_diag(response, 'max_step_distance_voxels', 0.0),
         }
 
         if response.success:
@@ -466,6 +506,7 @@ class AutoBenchmarkNode(Node):
                 'ts_ms': float(response.planning_time_ms),
                 'ns_visited_nodes': int(response.voxel_nodes_expanded),
                 'path_length_m': 0.0,
+                'failure_reason': _get_diag(response, 'failure_reason', 'query_timeout'),
                 **diag_fields,
             }
 
@@ -529,8 +570,13 @@ class AutoBenchmarkNode(Node):
                 nodes_list.append(r['ns_visited_nodes'])
                 lengths.append(r['path_length_m'])
                 # Keep diagnostics from last successful trial
+                _diag_keys = {'failure_reason', 'path_valid', 'invalid_reason',
+                              'invalid_edge_count', 'max_step_distance_voxels'}
                 last_diag = {k: v for k, v in r.items()
-                             if k.startswith('diag_')}
+                             if k.startswith('diag_') or k in _diag_keys}
+            else:
+                # Keep failure reason from last failed trial
+                last_diag['failure_reason'] = r.get('failure_reason', 'query_timeout')
 
         if not ts_list:
             return _failed_result(tp_ms=tp_ms, te_ms=te_ms, topo_ms=topo_ms, mem=mem)
@@ -554,7 +600,10 @@ class AutoBenchmarkNode(Node):
         # Add scene-level precompute stats
         if topo_extra:
             for k in ('tg_nodes', 'tg_edges', 'tg_connected_components',
-                       'skipped_rooms', 'transfer_coverage', 'selected_tau'):
+                       'skipped_rooms', 'transfer_coverage', 'selected_tau',
+                       'num_room_edges', 'num_portals', 'max_portals_per_edge',
+                       'portal_k_effective', 'tau_mode',
+                       'tau_selection_time_ms', 'tg_build_time_ms', 'alt_landmark_time_ms'):
                 if k in topo_extra:
                     result[k] = topo_extra[k]
         return result

@@ -35,3 +35,15 @@ int32 transfer_pairs_total
 int32 transfer_pairs_cached
 float64 transfer_coverage
 float64 selected_tau
+
+# ── P0.1: Additional scene-level fields ──
+int32 num_room_edges
+int32 num_portals
+int32 max_portals_per_edge          # echo back requested K
+float64 portal_k_effective          # actual mean K (some edges may have < K candidates)
+string tau_mode                     # "fixed" or "auto"
+
+# ── P0.3: Build timing breakdown ──
+float64 tau_selection_time_ms
+float64 tg_build_time_ms
+float64 alt_landmark_time_ms

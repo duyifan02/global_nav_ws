@@ -240,6 +240,7 @@ private:
 
     const auto t0 = std::chrono::steady_clock::now();
     double persistence_ms = 0.0, segmentation_ms = 0.0, precompute_ms = 0.0;
+    double tau_selection_ms = 0.0, tg_build_ms = 0.0, alt_landmark_ms = 0.0;
 
     // ── flat_surface: no topo map needed, just ensure planner is ready ──────
     if (mode == "flat_surface") {
@@ -292,6 +293,7 @@ private:
       if (auto_tau) {
         auto sel = selectTau(pr_, *voxel_map_);
         tau = sel.selected_tau;
+        tau_selection_ms = sel.selection_time_ms;
         RCLCPP_INFO(get_logger(),
           "Auto τ selected: %.1f (score=%.1f) in %.1f ms",
           sel.selected_tau, sel.candidates[sel.selected_idx].score,
@@ -316,18 +318,23 @@ private:
     auto pc_t0 = std::chrono::steady_clock::now();
     planner_->setTopoMap(rg_, fg_, skip_precompute);
     planner_->setUseStitch(mode != "no_stitch");
+    auto pc_t1 = std::chrono::steady_clock::now();
+    // tg_build_ms includes setTopoMap (room Dijkstra + TG construction)
+    tg_build_ms = std::chrono::duration<double, std::milli>(pc_t1 - pc_t0).count();
 
     // PH-ALT-TG: build transition graph ALT landmarks
     if (mode == "ph_alt_tg") {
       const int n_landmarks = req->num_landmarks > 0 ? req->num_landmarks : 8;
+      auto lm_t0 = std::chrono::steady_clock::now();
       planner_->precomputeTGLandmarks(n_landmarks);
+      auto lm_t1 = std::chrono::steady_clock::now();
+      alt_landmark_ms = std::chrono::duration<double, std::milli>(lm_t1 - lm_t0).count();
       planner_->setUsePHALT(true);
     } else {
       planner_->setUsePHALT(false);
     }
 
-    auto pc_t1 = std::chrono::steady_clock::now();
-    precompute_ms = std::chrono::duration<double, std::milli>(pc_t1 - pc_t0).count();
+    precompute_ms = tg_build_ms + alt_landmark_ms;
 
     // ── Build alternative planners if requested ─────────────────────────────
     if (mode == "prm") {
@@ -391,6 +398,18 @@ private:
     res->transfer_pairs_cached   = ps.transfer_pairs_cached;
     res->transfer_coverage       = ps.transfer_coverage;
     res->selected_tau            = static_cast<double>(tau);
+
+    // P0.1: Additional scene-level fields
+    res->num_room_edges          = ps.num_edges;
+    res->num_portals             = ps.num_portals;
+    res->max_portals_per_edge    = req->max_portals_per_edge > 0 ? req->max_portals_per_edge : 1;
+    res->portal_k_effective      = ps.portal_k_effective;
+    res->tau_mode                = auto_tau ? "auto" : "fixed";
+
+    // P0.3: Build timing breakdown
+    res->tau_selection_time_ms   = tau_selection_ms;
+    res->tg_build_time_ms        = tg_build_ms;
+    res->alt_landmark_time_ms    = alt_landmark_ms;
 
     RCLCPP_INFO(get_logger(),
       "BuildTopoMap [%s]: %d rooms (%d stair, %d corr), %d floors, "
@@ -513,6 +532,19 @@ private:
     res->diag_tg_nodes         = d.tg_nodes;
     res->diag_start_portals    = d.start_portals;
     res->diag_goal_portals     = d.goal_portals;
+
+    // P0.3: Per-query timing breakdown
+    res->diag_snap_ms           = hp.snap_ms;
+    res->diag_fallback_astar_ms = d.fallback_astar_ms;
+
+    // P0.4: Failure reason
+    res->failure_reason         = hp.failure_reason;
+
+    // P0.2: Path validity
+    res->path_valid              = hp.path_valid;
+    res->invalid_reason          = hp.invalid_reason;
+    res->invalid_edge_count      = hp.invalid_edge_count;
+    res->max_step_distance_voxels = hp.max_step_distance_voxels;
 
     for (int r : hp.room_sequence)  res->room_sequence.push_back(r);
     for (int f : hp.floor_sequence) res->floor_sequence.push_back(f);

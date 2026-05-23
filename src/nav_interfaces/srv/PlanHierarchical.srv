@@ -35,3 +35,16 @@ bool diag_cache_hit_all
 int32 diag_tg_nodes
 int32 diag_start_portals
 int32 diag_goal_portals
+
+# ── P0.3: Per-query timing breakdown ──
+float64 diag_snap_ms
+float64 diag_fallback_astar_ms
+
+# ── P0.4: Failure reason classification ──
+string failure_reason
+
+# ── P0.2: Path validity ──
+bool path_valid
+string invalid_reason
+int32 invalid_edge_count
+float64 max_step_distance_voxels
