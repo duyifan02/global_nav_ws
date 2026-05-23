@@ -72,7 +72,8 @@ float computeMedian(std::vector<float> v)
 RoomGraph segmentRooms(
   const PersistenceResult & pr,
   const jps_planner_3d::VoxelMap & vmap,
-  float tau)
+  float tau,
+  int max_portals_per_edge)
 {
   auto t0 = std::chrono::steady_clock::now();
 
@@ -195,16 +196,20 @@ RoomGraph segmentRooms(
   }
 
   // ── Phase 5: Extract room adjacency and boundary attributes ───────────────
-  // Key for boundary map: room_i * MAX_ROOMS + room_j (i < j)
-  // We also track per-side boundary info for transition points.
+  // Collect all boundary voxels per (edge, side) for multi-portal selection.
+  const int K = std::max(1, max_portals_per_edge);
+
+  struct BndVoxel { int surf_idx; float d_value; };
   struct BndInfo {
-    float min_d_i = 1e9f;   // min D on B_ij (room_i side)
-    float min_d_j = 1e9f;   // min D on B_ji (room_j side)
-    int argmax_surf_i = -1; // argmax D on B_ij
-    int argmax_surf_j = -1; // argmax D on B_ji
+    float min_d_i = 1e9f;
+    float min_d_j = 1e9f;
+    int argmax_surf_i = -1;
+    int argmax_surf_j = -1;
     float max_d_i = -1.f;
     float max_d_j = -1.f;
-    int len = 0;            // |B_ij|
+    int len = 0;
+    std::vector<BndVoxel> side_i;  // boundary voxels on room_i side
+    std::vector<BndVoxel> side_j;  // boundary voxels on room_j side
   };
 
   // Use a flat map: key = i * R + j (i < j)
@@ -231,16 +236,72 @@ RoomGraph segmentRooms(
       b.len++;
 
       if (ri < rj) {
-        // s is on room_i side (B_ij)
         b.min_d_i = std::min(b.min_d_i, ds);
         if (ds > b.max_d_i) { b.max_d_i = ds; b.argmax_surf_i = s; }
+        if (K > 1) b.side_i.push_back({s, ds});
       } else {
-        // s is on room_j side (B_ji)
         b.min_d_j = std::min(b.min_d_j, ds);
         if (ds > b.max_d_j) { b.max_d_j = ds; b.argmax_surf_j = s; }
+        if (K > 1) b.side_j.push_back({s, ds});
       }
     }
   }
+
+  // Select top-K portals via farthest-point sampling seeded from argmax-D.
+  // Ensures geometric spread while preferring high-clearance boundary voxels.
+  auto selectPortals = [&](std::vector<BndVoxel> & voxels, int seed_surf) -> std::vector<int> {
+    if (voxels.empty()) return seed_surf >= 0 ? std::vector<int>{seed_surf} : std::vector<int>{};
+    if (K <= 1) return {seed_surf};
+
+    // Deduplicate (same voxel may appear multiple times from different neighbor pairs)
+    std::sort(voxels.begin(), voxels.end(),
+              [](const BndVoxel & a, const BndVoxel & b) { return a.surf_idx < b.surf_idx; });
+    voxels.erase(std::unique(voxels.begin(), voxels.end(),
+                 [](const BndVoxel & a, const BndVoxel & b) { return a.surf_idx == b.surf_idx; }),
+                 voxels.end());
+
+    if (static_cast<int>(voxels.size()) <= K) {
+      std::vector<int> result;
+      // Put seed first
+      result.push_back(seed_surf);
+      for (auto & v : voxels)
+        if (v.surf_idx != seed_surf) result.push_back(v.surf_idx);
+      return result;
+    }
+
+    // Farthest-point sampling from seed
+    std::vector<int> selected;
+    selected.push_back(seed_surf);
+    std::vector<float> min_dist_sq(voxels.size(), std::numeric_limits<float>::max());
+
+    for (int k = 1; k < K; ++k) {
+      // Update min_dist from last selected portal
+      const int last = selected.back();
+      const auto & lv = graph[last];
+      for (size_t i = 0; i < voxels.size(); ++i) {
+        const auto & vi = graph[voxels[i].surf_idx];
+        float dx = static_cast<float>(vi.x - lv.x);
+        float dy = static_cast<float>(vi.y - lv.y);
+        float dz = static_cast<float>(vi.z - lv.z);
+        float d2 = dx * dx + dy * dy + dz * dz;
+        min_dist_sq[i] = std::min(min_dist_sq[i], d2);
+      }
+      // Select farthest unselected voxel
+      int best = -1;
+      float best_dist = -1.f;
+      for (size_t i = 0; i < voxels.size(); ++i) {
+        bool already = false;
+        for (int s : selected) { if (voxels[i].surf_idx == s) { already = true; break; } }
+        if (already) continue;
+        if (min_dist_sq[i] > best_dist) {
+          best_dist = min_dist_sq[i];
+          best = static_cast<int>(i);
+        }
+      }
+      if (best >= 0) selected.push_back(voxels[best].surf_idx);
+    }
+    return selected;
+  };
 
   // Build edges from boundary map
   rg.edges.reserve(bnd_map.size());
@@ -251,10 +312,9 @@ RoomGraph segmentRooms(
     const float min_d   = std::min(b.min_d_i, b.min_d_j);
     const float pass_w  = 2.f * min_d * static_cast<float>(res);
 
-    // Symmetric transition point: midpoint of the two best-clearance boundary voxels
+    // Primary portal: argmax D per side
     int si = b.argmax_surf_i;
     int sj = b.argmax_surf_j;
-    // Fallback: if one side has no data (rare degenerate case), use what we have
     if (si < 0) si = (sj >= 0) ? sj : 0;
     if (sj < 0) sj = si;
 
@@ -270,7 +330,16 @@ RoomGraph segmentRooms(
     edge.trans_wx         = 0.5f * (static_cast<float>(wxi) + static_cast<float>(wxj));
     edge.trans_wy         = 0.5f * (static_cast<float>(wyi) + static_cast<float>(wyj));
     edge.trans_wz         = 0.5f * (static_cast<float>(wzi) + static_cast<float>(wzj));
-    edge.boundary_length  = b.len / 2;  // each side counts separately above
+    edge.boundary_length  = b.len / 2;
+
+    // Multi-portal selection
+    if (K > 1) {
+      edge.transitions_i = selectPortals(b.side_i, si);
+      edge.transitions_j = selectPortals(b.side_j, sj);
+    } else {
+      edge.transitions_i = {si};
+      edge.transitions_j = {sj};
+    }
 
     const int eidx = static_cast<int>(rg.edges.size());
     rg.edges.push_back(edge);

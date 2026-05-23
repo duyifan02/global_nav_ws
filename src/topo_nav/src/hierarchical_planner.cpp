@@ -114,14 +114,20 @@ void HierarchicalPlanner::precomputeTransfers()
     const auto adj_it = rg_.adjacency.find(r);
     if (adj_it == rg_.adjacency.end()) continue;
 
-    // Collect (edge_idx, transition_surf on room-r side) for all incident edges
+    // Collect (edge_idx, transition_surf on room-r side) for all incident portals
     std::vector<std::pair<int, int>> incident;
-    incident.reserve(adj_it->second.size());
     for (auto & [nbr, eidx] : adj_it->second) {
       const auto & edge = rg_.edges[eidx];
-      const int t = (edge.room_i == r) ? edge.transition_surf_i
-                                       : edge.transition_surf_j;
-      incident.emplace_back(eidx, t);
+      const auto & trans = (edge.room_i == r) ? edge.transitions_i : edge.transitions_j;
+      if (trans.empty()) {
+        // Fallback to primary portal (backward compat)
+        const int t = (edge.room_i == r) ? edge.transition_surf_i : edge.transition_surf_j;
+        incident.emplace_back(eidx, t);
+      } else {
+        for (int t : trans) {
+          incident.emplace_back(eidx, t);
+        }
+      }
     }
     if (incident.size() < 2) continue;  // dead-end: no through-paths to precompute
 
@@ -238,66 +244,83 @@ void HierarchicalPlanner::buildTransitionGraph()
 
   tg_nodes_.clear();
   tg_room_portals_.clear();
+  tg_edge_portals_.clear();
+  tg_edge_portals_.resize(E);
 
   const auto & graph = vmap_->getSurfaceGraph();
   const double res = vmap_->getResolution();
 
-  // Create two portal nodes per room edge
+  // Create portal nodes for each room edge (multi-portal: K per side)
   for (int eidx = 0; eidx < E; ++eidx) {
     const auto & edge = rg_.edges[eidx];
 
-    // room_i side portal
-    TGNode ni;
-    ni.surf_idx = edge.transition_surf_i;
-    ni.room_id  = edge.room_i;
-    ni.edge_idx = eidx;
-    int nid_i = static_cast<int>(tg_nodes_.size());
-    tg_nodes_.push_back(ni);
-    tg_room_portals_[edge.room_i].push_back(nid_i);
+    // room_i side portals
+    const auto & ti = edge.transitions_i.empty()
+      ? std::vector<int>{edge.transition_surf_i} : edge.transitions_i;
+    for (int surf : ti) {
+      TGNode nd;
+      nd.surf_idx = surf;
+      nd.room_id  = edge.room_i;
+      nd.edge_idx = eidx;
+      int nid = static_cast<int>(tg_nodes_.size());
+      tg_nodes_.push_back(nd);
+      tg_room_portals_[edge.room_i].push_back(nid);
+      tg_edge_portals_[eidx].nodes_i.push_back(nid);
+    }
 
-    // room_j side portal
-    TGNode nj;
-    nj.surf_idx = edge.transition_surf_j;
-    nj.room_id  = edge.room_j;
-    nj.edge_idx = eidx;
-    int nid_j = static_cast<int>(tg_nodes_.size());
-    tg_nodes_.push_back(nj);
-    tg_room_portals_[edge.room_j].push_back(nid_j);
+    // room_j side portals
+    const auto & tj = edge.transitions_j.empty()
+      ? std::vector<int>{edge.transition_surf_j} : edge.transitions_j;
+    for (int surf : tj) {
+      TGNode nd;
+      nd.surf_idx = surf;
+      nd.room_id  = edge.room_j;
+      nd.edge_idx = eidx;
+      int nid = static_cast<int>(tg_nodes_.size());
+      tg_nodes_.push_back(nd);
+      tg_room_portals_[edge.room_j].push_back(nid);
+      tg_edge_portals_[eidx].nodes_j.push_back(nid);
+    }
   }
 
   tg_num_nodes_ = static_cast<int>(tg_nodes_.size());
   tg_adj_.assign(tg_num_nodes_, {});
 
-  // Crossing edges: portal_i ↔ portal_j for each room edge
+  // Crossing edges: all-to-all between room_i and room_j portals of each edge
   for (int eidx = 0; eidx < E; ++eidx) {
-    int ni = eidx * 2;      // room_i side
-    int nj = eidx * 2 + 1;  // room_j side
-
-    const auto & a = graph[tg_nodes_[ni].surf_idx];
-    const auto & b = graph[tg_nodes_[nj].surf_idx];
-    double dx = (b.x - a.x) * res;
-    double dy = (b.y - a.y) * res;
-    double dz = (b.z - a.z) * res;
-    double cross_cost = std::sqrt(dx * dx + dy * dy + dz * dz);
-
-    tg_adj_[ni].emplace_back(nj, cross_cost);
-    tg_adj_[nj].emplace_back(ni, cross_cost);
+    const auto & ep = tg_edge_portals_[eidx];
+    for (int ni : ep.nodes_i) {
+      for (int nj : ep.nodes_j) {
+        const auto & a = graph[tg_nodes_[ni].surf_idx];
+        const auto & b = graph[tg_nodes_[nj].surf_idx];
+        double dx = (b.x - a.x) * res;
+        double dy = (b.y - a.y) * res;
+        double dz = (b.z - a.z) * res;
+        double cross_cost = std::sqrt(dx * dx + dy * dy + dz * dz);
+        tg_adj_[ni].emplace_back(nj, cross_cost);
+        tg_adj_[nj].emplace_back(ni, cross_cost);
+      }
+    }
   }
 
   // Intra-room edges: between portals of the same room
-  // Use precomputed transfer_cost_ (Dijkstra shortest-path cost) directly
+  // Use trans_field_ (Dijkstra parent trees) for exact geodesic costs
   const double INF_tg = std::numeric_limits<double>::infinity();
   for (auto & [room_id, portal_nodes] : tg_room_portals_) {
     for (size_t i = 0; i < portal_nodes.size(); ++i) {
+      int na = portal_nodes[i];
+      int sa = tg_nodes_[na].surf_idx;
+      auto fa = trans_field_.find(sa);
+      if (fa == trans_field_.end()) continue;
+
       for (size_t j = 0; j < portal_nodes.size(); ++j) {
         if (i == j) continue;
-        int na = portal_nodes[i];
         int nb = portal_nodes[j];
-        int ea = tg_nodes_[na].edge_idx;
-        int eb = tg_nodes_[nb].edge_idx;
+        int sb = tg_nodes_[nb].surf_idx;
 
-        int slot = ea * E + eb;
-        double cost = transfer_cost_[slot];
+        auto dit = fa->second.dist.find(sb);
+        if (dit == fa->second.dist.end()) continue;
+        double cost = dit->second;
         if (cost >= INF_tg || cost <= 0.0) continue;
 
         tg_adj_[na].emplace_back(nb, cost);
@@ -975,6 +998,8 @@ std::vector<int> HierarchicalPlanner::stitchPath(
 
   const int E = transfer_E_;
 
+  // Portal lookup: use route-specific portals (multi-portal) or fall back to primary
+  const bool has_portal_info = !route.exit_portals.empty();
   auto roomSideTrans = [&](int room, int eidx) -> int {
     const auto & e = rg_.edges[eidx];
     return (e.room_i == room) ? e.transition_surf_i : e.transition_surf_j;
@@ -1019,7 +1044,8 @@ std::vector<int> HierarchicalPlanner::stitchPath(
   {
     const int start_room = route.rooms[0];
     const int e0         = route.edges[0];
-    const int t_exit     = roomSideTrans(start_room, e0);
+    const int t_exit     = has_portal_info ? route.exit_portals[0]
+                                          : roomSideTrans(start_room, e0);
     bool cached = false;
 
     fprintf(stderr, "[stitch-seg0] start_surf=%d(r%d) → t_exit=%d(r%d) e0=%d\n",
@@ -1069,8 +1095,10 @@ std::vector<int> HierarchicalPlanner::stitchPath(
     const int r       = route.rooms[i];
     const int e_in    = route.edges[i - 1];
     const int e_out   = route.edges[i];
-    const int t_enter = roomSideTrans(r, e_in);
-    const int t_exit  = roomSideTrans(r, e_out);
+    const int t_enter = has_portal_info ? route.entry_portals[i - 1]
+                                       : roomSideTrans(r, e_in);
+    const int t_exit  = has_portal_info ? route.exit_portals[i]
+                                       : roomSideTrans(r, e_out);
 
     fprintf(stderr, "[stitch-mid%zu] room=%d e_in=%d→e_out=%d t_enter=%d(r%d)→t_exit=%d(r%d)\n",
             i, r, e_in, e_out,
@@ -1133,7 +1161,8 @@ std::vector<int> HierarchicalPlanner::stitchPath(
     ++seg_total;
     const int goal_room = route.rooms.back();
     const int e_last    = route.edges.back();
-    const int t_enter   = roomSideTrans(goal_room, e_last);
+    const int t_enter   = has_portal_info ? route.entry_portals.back()
+                                         : roomSideTrans(goal_room, e_last);
 
     fprintf(stderr, "[stitch-fin] t_enter=%d(r%d) → goal_surf=%d(r%d) e_last=%d\n",
             t_enter, rg_.room_labels[t_enter],
@@ -1381,17 +1410,22 @@ HierarchicalPlanner::RoomRoute HierarchicalPlanner::transitionGraphAstar(
 
   if (portal_seq.empty()) return route;
 
-  // Convert portal sequence to RoomRoute
-  // Track room transitions: when room changes between consecutive portals,
-  // that's a boundary crossing and we record the edge.
+  // Convert portal sequence to RoomRoute with specific portal info.
+  // When room changes between consecutive portals, that's a boundary
+  // crossing — record the edge and the exact exit/entry portal surf_idx.
   route.rooms.push_back(start_room);
 
   for (size_t i = 0; i < portal_seq.size(); ++i) {
     int nid  = portal_seq[i];
     int room = tg_nodes_[nid].room_id;
     if (room != route.rooms.back()) {
+      // Crossing: previous portal is exit, current is entry
+      int exit_nid = (i > 0) ? portal_seq[i - 1] : -1;
       route.rooms.push_back(room);
       route.edges.push_back(tg_nodes_[nid].edge_idx);
+      route.exit_portals.push_back(
+        exit_nid >= 0 ? tg_nodes_[exit_nid].surf_idx : tg_nodes_[nid].surf_idx);
+      route.entry_portals.push_back(tg_nodes_[nid].surf_idx);
     }
   }
 

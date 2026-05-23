@@ -189,7 +189,8 @@ class AutoBenchmarkNode(Node):
                  planner_mode: str = 'full',
                  target_room_count: int = 0,
                  num_prm_samples: int = 1000,
-                 num_landmarks: int = 16):
+                 num_landmarks: int = 16,
+                 max_portals_per_edge: int = 1):
         super().__init__('auto_benchmark')
 
         self.service_timeout_sec = service_timeout_sec
@@ -208,6 +209,7 @@ class AutoBenchmarkNode(Node):
         self.target_room_count = target_room_count
         self.num_prm_samples = num_prm_samples
         self.num_landmarks = num_landmarks
+        self.max_portals_per_edge = max_portals_per_edge
 
         self.cb_group = ReentrantCallbackGroup()
 
@@ -328,6 +330,7 @@ class AutoBenchmarkNode(Node):
         request.target_room_count = self.target_room_count
         request.num_prm_samples = self.num_prm_samples
         request.num_landmarks = self.num_landmarks
+        request.max_portals_per_edge = self.max_portals_per_edge
 
         print(f'  [TOPO] 构建拓扑地图 (τ={self.persistence_tau}, mode={self.planner_mode})...')
         response = self._call_service(
@@ -646,6 +649,8 @@ def main():
                         help='Number of PRM roadmap samples')
     parser.add_argument('--num-landmarks', type=int, default=16,
                         help='Number of ALT landmarks')
+    parser.add_argument('--max-portals', type=int, default=1,
+                        help='Max portals per room edge side (multi-portal, default 1)')
 
     parser.add_argument('--occmap-dir', type=str, default=None,
                         help='Pre-built occmap dir (from convert_all_meshes.py). '
@@ -695,6 +700,7 @@ def main():
         target_room_count=args.target_rooms,
         num_prm_samples=args.prm_samples,
         num_landmarks=args.num_landmarks,
+        max_portals_per_edge=args.max_portals,
     )
     executor = MultiThreadedExecutor()
     executor.add_node(node)

@@ -148,6 +148,12 @@ private:
   struct RoomRoute {
     std::vector<int> rooms;          ///< Ordered room ids (size = N+1, including start/goal)
     std::vector<int> edges;          ///< Ordered edge ids between consecutive rooms (size = N)
+    /// Multi-portal: specific portal surf_idx chosen by TG A* for each crossing.
+    /// exit_portals[i]  = surf_idx in rooms[i]   (exit side of edges[i])
+    /// entry_portals[i] = surf_idx in rooms[i+1] (entry side of edges[i])
+    /// Empty when route comes from roomAstar (falls back to primary portal).
+    std::vector<int> exit_portals;
+    std::vector<int> entry_portals;
   };
 
   /// Step 2: A* on RoomGraph restricted to relevant floors + staircase rooms.
@@ -277,9 +283,16 @@ private:
     int edge_idx;     ///< which room edge this portal belongs to
   };
 
+  /// Per-edge portal TG node mapping (for multi-portal crossing edges).
+  struct EdgePortals {
+    std::vector<int> nodes_i;  ///< TG node IDs for room_i side
+    std::vector<int> nodes_j;  ///< TG node IDs for room_j side
+  };
+
   int tg_num_nodes_ = 0;
   std::vector<TGNode> tg_nodes_;
   std::unordered_map<int, std::vector<int>> tg_room_portals_;  ///< room_id → [node_ids]
+  std::vector<EdgePortals> tg_edge_portals_;                   ///< edge_idx → portal nodes
   std::vector<std::vector<std::pair<int, double>>> tg_adj_;    ///< node_id → [(nbr, cost)]
 
   int tg_num_landmarks_ = 0;

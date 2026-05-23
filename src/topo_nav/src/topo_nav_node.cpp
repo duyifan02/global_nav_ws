@@ -300,8 +300,10 @@ private:
         segmentation_ms += sel.selection_time_ms;
       }
 
+      const int K_portals = req->max_portals_per_edge > 0 ? req->max_portals_per_edge : 1;
+
       auto seg_t0 = std::chrono::steady_clock::now();
-      rg_ = segmentRooms(pr_, *voxel_map_, tau);
+      rg_ = segmentRooms(pr_, *voxel_map_, tau, K_portals);
       auto seg_t1 = std::chrono::steady_clock::now();
       segmentation_ms += std::chrono::duration<double, std::milli>(seg_t1 - seg_t0).count();
     }

@@ -7,6 +7,7 @@ string planner_mode            # "full" (default), "no_stitch", "flat_surface", 
 int32 target_room_count        # for grid_partition mode (0 = auto from PH default)
 int32 num_prm_samples          # for PRM mode (0 = default 1000)
 int32 num_landmarks            # for ALT mode (0 = default 16)
+int32 max_portals_per_edge     # multi-portal: K portals per room edge side (0 = default 1)
 ---
 bool success
 string message

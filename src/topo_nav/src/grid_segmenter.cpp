@@ -232,6 +232,8 @@ RoomGraph segmentRoomsGrid(
     edge.passage_width_m  = pass_w;
     edge.transition_surf_i = si;
     edge.transition_surf_j = sj;
+    edge.transitions_i = {si};
+    edge.transitions_j = {sj};
     edge.trans_wx = 0.5f * (static_cast<float>(wxi) + static_cast<float>(wxj));
     edge.trans_wy = 0.5f * (static_cast<float>(wyi) + static_cast<float>(wyj));
     edge.trans_wz = 0.5f * (static_cast<float>(wzi) + static_cast<float>(wzj));
