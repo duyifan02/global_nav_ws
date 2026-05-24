@@ -1,0 +1,7 @@
+bad_case_type,count,fraction
+acceptable,100,0.7407
+portal_placement,15,0.1111
+unknown,12,0.0889
+long_route_overhead,4,0.0296
+fallback_issue,2,0.0148
+same_room_detour,2,0.0148

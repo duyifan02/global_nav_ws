@@ -1,0 +1,8 @@
+method,resolution,total_queries,success,failed,success_rate,valid_paths,invalid_paths,valid_rate,mean_ts_ms,p95_ts_ms,n_scenes,all_fail_scenes,partial_fail_scenes,failure_reasons
+ALT 0.1m,0.1m,500,443,57,88.6,0,443,0.0,0.1655,0.3743,100,0,33,voxelization_or_map_failed=57
+TG K=1 0.1m,0.1m,500,452,48,90.4,144,308,31.9,0.1465,1.5743,100,0,30,voxelization_or_map_failed=48
+TG auto 0.1m,0.1m,500,457,43,91.4,0,0,0.0,0.1381,1.5749,100,0,24,voxelization_or_map_failed=43
+ALT 0.075m,0.075m,500,408,92,81.6,0,0,0.0,0.3097,1.6795,100,1,45,voxelization_or_map_failed=92
+TG auto 0.075m,0.075m,500,405,95,81.0,0,0,0.0,0.1461,1.5159,100,4,41,voxelization_or_map_failed=95
+ALT 0.05m,0.05m,500,315,185,63.0,0,0,0.0,0.4345,1.8093,100,10,61,voxelization_or_map_failed=185
+TG auto 0.05m,0.05m,500,327,173,65.4,0,0,0.0,0.2224,1.6416,100,9,63,voxelization_or_map_failed=173

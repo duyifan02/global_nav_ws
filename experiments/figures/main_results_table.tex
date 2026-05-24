@@ -1,0 +1,20 @@
+\begin{table}[t]
+\centering
+\caption{Main results: PH-ALT-TG vs ALT baseline.}
+\label{tab:main}
+\begin{tabular}{ll rr rrr rr r}
+\toprule
+Dataset & Method & Succ\% & Valid\% & $\bar{T}_q$ & $T_q^{95}$ & $\bar{L}$ & OH\% & OH$_{50}$\% & $T_{pre}$ \\
+ & & & & (ms) & (ms) & (m) & (mean) & (med) & (ms) \\
+\midrule
+  MP3D & ALT (L=16) & 100.0\% & 100.0\% & 0.472 & 1.053 & 34.32 & -- & -- & 299.6 \\
+  MP3D & TG K=1 & 100.0\% & 0.0\% & 0.055 & 0.084 & 34.77 & +1.1\% & +0.7\% & 206.1 \\
+  MP3D & TG K=5 & 100.0\% & 16.7\% & 0.082 & 0.128 & 33.96 & -2.1\% & +0.1\% & 955.1 \\
+\addlinespace
+  HM3D & ALT (L=16) & 88.6\% & 100.0\% & 0.166 & 0.374 & 15.95 & -- & -- & 75.9 \\
+  HM3D & TG K=1 & 90.4\% & 31.9\% & 0.146 & 1.574 & 18.67 & +3.1\% & +1.8\% & 50.8 \\
+  HM3D & TG K=5 & 91.2\% & 28.5\% & 0.180 & 1.600 & 16.32 & +1.1\% & +1.6\% & 212.1 \\
+\addlinespace
+\bottomrule
+\end{tabular}
+\end{table}

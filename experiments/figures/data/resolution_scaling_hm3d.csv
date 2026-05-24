@@ -1,0 +1,2 @@
+resolution,alt_ts_mean,alt_ts_p95,tg_ts_mean,tg_ts_p95,speedup,oh_mean,oh_med,alt_succ_rate,tg_succ_rate
+0.1,0.1655,0.3743,0.1804,1.6000,0.92,1.14,1.61,88.6,91.2
