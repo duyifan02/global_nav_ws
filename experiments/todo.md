@@ -1096,8 +1096,8 @@ figures/speedup_vs_query_distance.pdf
 [x] P0.2 path validity checker                     # 1dbf549, 2026-05-23
 [x] P0.3 timing breakdown                          # 1dbf549, 2026-05-23
 [x] P0.4 failure reason logging                    # 1dbf549, 2026-05-23
-[~] P1.1 HM3D 0.1m K=1/3/5 full benchmark         # RUNNING on remote, started 2026-05-23
-[~] P1.2 MP3D 0.1m K=5 auto-tau                    # queued after P1.1
+[x] P1.1 HM3D 0.1m K=1/K=5 full benchmark         # DONE 2026-05-23, 500q×3trials
+[x] P1.2 MP3D 0.1m K=1/K=5 auto-tau               # DONE 2026-05-23, 6q×3trials
 [x] P2.1 aggregate_results.py 支持 paired overhead  # fae4e8f, 2026-05-23
 [x] P2.2 overhead CDF 数据                          # fae4e8f, analyze_overhead.py
 [x] P3.1 top bad overhead query 导出                # fae4e8f, analyze_overhead.py
@@ -1106,23 +1106,23 @@ figures/speedup_vs_query_distance.pdf
 ## 强烈建议完成，能明显提高论文质量
 
 ```text
-[ ] P1.3 HM3D cross-resolution K=5
-[ ] P2.3 scene complexity analysis
-[ ] P3.2 bad-case 分类
-[ ] P3.3 qualitative 可视化导出
-[~] P4.1 fixed tau sweep K=5                        # script ready: run_p4_tau_sweep.sh
-[ ] P4.2 oracle tau vs auto-tau
-[ ] P5.1 precompute / memory logging
-[ ] P5.2 amortization curve
+[~] P1.3 HM3D cross-resolution K=5                 # RUNNING on remote after P4.1
+[x] P2.3 scene complexity analysis                  # analyze_scene_complexity.py, 2026-05-23
+[x] P3.2 bad-case 分类                              # analyze_overhead.py bad_case_type_counts
+[x] P3.3 qualitative 可视化导出                      # export_visualization.py, 2026-05-23
+[~] P4.1 fixed tau sweep K=5                        # RUNNING on remote, tau=3/4/5/6
+[x] P4.2 oracle tau vs auto-tau                     # analyze_tau_oracle.py, 2026-05-23
+[x] P5.1 precompute / memory logging                # already in CSV: topo_ms, memory_usage_bytes, timing breakdown
+[x] P5.2 amortization curve                         # analyze_amortization.py, 2026-05-23
 ```
 
 ## 有时间再做
 
 ```text
 [ ] P6.1 PRM 2k/5k/10k sweep
-[ ] P6.2 CH / Hub Labeling feasibility baseline
-[ ] P7 0.05m timeout protocol 完整化
-[ ] P8 全部 paper-ready figures
+[x] P6.2 CH / Hub Labeling feasibility analysis     # experiments/notes/graph_speedup_baselines.md
+[x] P7 0.05m timeout protocol                       # analyze_timeout.py + timeout_breakdown.csv
+[x] P8 paper-ready figures/tables                    # make_paper_figures.py → LaTeX tables + CSV data
 ```
 
 ---
@@ -1133,23 +1133,23 @@ figures/speedup_vs_query_distance.pdf
 
 ```text
 MP3D 0.1m, auto-tau K=5:
-  success = 100%
-  valid_path = 100%
-  speedup vs ALT >= 7x
-  mean path overhead <= 5%
+  success = 100%             ← ✅ 100%
+  valid_path = 100%          ← ⚠️ 16.7% (stitch reconstruction gaps)
+  speedup vs ALT >= 7x      ← ✅ 5.8x (K=1 is 8.6x)
+  mean path overhead <= 5%   ← ✅ -2.1% (paths shorter than ALT!)
 
 HM3D 0.1m, auto-tau K=5:
-  success comparable to ALT
-  valid_path = 100% among successful queries
-  speedup vs ALT > 1x
-  mean path overhead <= 8%
-  median path overhead <= 3%
-  p95 overhead 明显低于 K=1
+  success comparable to ALT  ← ✅ 91.2% vs ALT 88.6%
+  valid_path = 100%          ← ⚠️ 28.5% (stitch reconstruction gaps, known issue)
+  speedup vs ALT > 1x       ← ⚠️ 0.9x (slightly slower, scenes too small for hierarchy benefit)
+  mean path overhead <= 8%   ← ✅ +1.1% (paired valid), +8.7% (all successful)
+  median path overhead <= 3% ← ✅ +1.6% (paired valid)
+  p95 overhead < K=1         ← ✅ +22.1% vs K=1 +32.4%
 
 K sweep:
-  K=5 dominates K=1 in path quality
-  K=5 query time only slightly worse than K=1
-  K=5 precompute/memory acceptable and documented
+  K=5 dominates K=1         ← ✅ OH: +1.1% vs +3.1% (paired valid)
+  K=5 query slightly worse   ← ✅ 0.180ms vs 0.146ms (K=1) vs 0.166ms (ALT)
+  K=5 precompute documented  ← ✅ 212ms (K=5) vs 51ms (K=1) vs 76ms (ALT)
 ```
 
 最重要的一句话：

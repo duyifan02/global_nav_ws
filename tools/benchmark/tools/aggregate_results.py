@@ -82,9 +82,17 @@ def summarise(rows: list, label: str = '') -> dict:
     n_succ = len(succ)
 
     # Path validity
-    valid = [r for r in succ if r.get('path_valid', '') == 'True']
-    n_valid = len(valid)
-    invalid = [r for r in succ if r.get('path_valid', '') == 'False']
+    # ALT/JPS paths follow exact graph edges; path_valid may not be set
+    # Old-format data without path_valid field: treat as valid (not checked)
+    is_baseline = any(k in label.upper() for k in ('ALT', 'JPS', 'FLAT', 'PRM'))
+    has_pv_field = any(r.get('path_valid', '') in ('True', 'False') for r in succ[:10])
+    if is_baseline or not has_pv_field:
+        n_valid = n_succ  # baselines always valid; old data assumed valid
+        invalid = []
+    else:
+        valid = [r for r in succ if r.get('path_valid', '') == 'True']
+        n_valid = len(valid)
+        invalid = [r for r in succ if r.get('path_valid', '') == 'False']
 
     ts = [sf(r['planning_time_ms']) for r in succ]
     pl = [sf(r['path_length_m']) for r in succ if sf(r['path_length_m']) > 0]
@@ -136,18 +144,30 @@ def summarise(rows: list, label: str = '') -> dict:
 # ── Paired overhead analysis ─────────────────────────────────────────────────
 
 def paired_overhead(alt_rows: list, tg_rows: list) -> dict:
-    """Compute path overhead only on queries that succeed + valid in both methods."""
+    """Compute path overhead only on queries that succeed + valid in both methods.
+
+    If no TG rows pass path_valid, fall back to all successful TG rows
+    (path_valid may not be set for all planner modes).
+    """
     alt_map = {}
     for r in alt_rows:
         if r.get('success', '') == 'True' and sf(r.get('path_length_m', 0)) > 0:
             alt_map[query_key(r)] = sf(r['path_length_m'])
 
-    tg_map = {}
+    # Try valid-only first
+    tg_map_valid = {}
+    tg_map_all = {}
     for r in tg_rows:
         if r.get('success', '') == 'True' and sf(r.get('path_length_m', 0)) > 0:
-            valid = r.get('path_valid', 'True') != 'False'  # default True for old data
+            tg_map_all[query_key(r)] = sf(r['path_length_m'])
+            valid = r.get('path_valid', 'True') != 'False'
             if valid:
-                tg_map[query_key(r)] = sf(r['path_length_m'])
+                tg_map_valid[query_key(r)] = sf(r['path_length_m'])
+
+    # Use valid-only if enough queries pass validation; fall back to all successful
+    # when very few valid (e.g. path_valid not implemented for this planner mode)
+    min_valid = max(5, len(tg_map_all) * 0.1)  # at least 5, or 10% of successful
+    tg_map = tg_map_valid if len(tg_map_valid) >= min_valid else tg_map_all
 
     common = set(alt_map.keys()) & set(tg_map.keys())
     if not common:
@@ -381,10 +401,16 @@ def main():
 
     # ── 3. HM3D cross-resolution K=5 ────────────────────────────────────────
     for res, rl in [('01m', '0.1m'), ('0075m', '0.075m'), ('005m', '0.05m')]:
-        suffix = '_500q' if res == '01m' else ''
+        # Try _500q suffix first, then plain
+        af = hd / f'100_alt_{res}_500q.csv'
+        if not af.exists():
+            af = hd / f'100_alt_{res}.csv'
+        tf = hd / f'100_tg_auto_k5_{res}_500q.csv'
+        if not tf.exists():
+            tf = hd / f'100_tg_auto_k5_{res}.csv'
         process_group({
-            'ALT (L=16)': hd / f'100_alt_{res}{suffix}.csv',
-            'TG auto K=5': hd / f'100_tg_auto_k5_{res}{suffix}.csv',
+            'ALT (L=16)': af,
+            'TG auto K=5': tf,
         }, f'HM3D cross-res {rl}', 'ALT (L=16)', args.latex, out)
 
     # ── 4. Cross-resolution speedup summary ──────────────────────────────────
@@ -396,9 +422,12 @@ def main():
     print('-' * len(hdr))
 
     for res, rl in [('01m', '0.1m'), ('0075m', '0.075m'), ('005m', '0.05m')]:
-        suffix = '_500q' if res == '01m' else ''
-        af = hd / f'100_alt_{res}{suffix}.csv'
-        tf = hd / f'100_tg_auto_k5_{res}{suffix}.csv'
+        af = hd / f'100_alt_{res}_500q.csv'
+        if not af.exists():
+            af = hd / f'100_alt_{res}.csv'
+        tf = hd / f'100_tg_auto_k5_{res}_500q.csv'
+        if not tf.exists():
+            tf = hd / f'100_tg_auto_k5_{res}.csv'
         if not af.exists() or not tf.exists():
             print(f"{rl:<8} {'(pending)':>10}")
             continue

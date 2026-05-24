@@ -59,6 +59,41 @@ def load_method(path: str) -> dict:
     return by_key
 
 
+def classify_bad_case(row: dict, overhead_threshold: float = 10.0) -> str:
+    """P3.2: Heuristic bad-case classification."""
+    oh = row.get('overhead_pct', 0)
+    if abs(oh) < overhead_threshold:
+        return 'acceptable'
+
+    same_room = str(row.get('tg_same_room', '')).lower() == 'true'
+    hops = sf(row.get('tg_room_hops', 0))
+    fb_nodes = sf(row.get('tg_fallback_nodes', 0))
+    alt_path = sf(row.get('alt_path_m', 0))
+    tg_path = sf(row.get('tg_path_m', 0))
+
+    # Same-room query with high overhead → detour through portal
+    if same_room and oh > overhead_threshold:
+        return 'same_room_detour'
+
+    # High fallback nodes → cache miss, had to run online A*
+    if fb_nodes > 100:
+        return 'fallback_issue'
+
+    # Very short ALT path with high overhead → portal overhead dominates
+    if alt_path < 2.0 and oh > overhead_threshold:
+        return 'short_path_overhead'
+
+    # Many room hops but high overhead → room routing suboptimal
+    if hops >= 4 and oh > overhead_threshold:
+        return 'long_route_overhead'
+
+    # Few hops, high overhead → portal placement issue
+    if hops <= 2 and oh > overhead_threshold:
+        return 'portal_placement'
+
+    return 'unknown'
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--alt', required=True, help='ALT baseline CSV')
@@ -124,6 +159,8 @@ def main():
                     'k_effective': t.get('portal_k_effective', ''),
                     'path_valid': t.get('path_valid', ''),
                 })
+                # Add bad-case classification
+                paired[-1]['bad_case_type'] = classify_bad_case(paired[-1])
 
         if not paired:
             print("  No paired queries found!")
@@ -140,13 +177,28 @@ def main():
         print(f"  Queries with OH < 0: {sum(1 for o in overheads if o < 0)} "
               f"({sum(1 for o in overheads if o < 0)/len(overheads)*100:.1f}%)")
 
+        safe_label = label.lower().replace(' ', '_').replace('=', '')
+
+        # Bad-case type counts
+        from collections import Counter
+        type_counts = Counter(p['bad_case_type'] for p in paired)
+        print(f"\n  Bad-case classification (OH threshold = 10%):")
+        for t, c in type_counts.most_common():
+            print(f"    {t:<25} {c:>5} ({c/len(paired)*100:.1f}%)")
+
+        # Write bad-case type counts CSV
+        type_csv = out_dir / f'bad_case_type_counts_{safe_label}.csv'
+        with open(type_csv, 'w', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(['bad_case_type', 'count', 'fraction'])
+            for t, c in type_counts.most_common():
+                w.writerow([t, c, f"{c/len(paired):.4f}"])
+
         all_overhead_rows.extend(paired)
 
         # Top bad cases
         sorted_by_oh = sorted(paired, key=lambda x: x['overhead_pct'], reverse=True)
         top_bad = sorted_by_oh[:args.top_n]
-
-        safe_label = label.lower().replace(' ', '_').replace('=', '')
         bad_path = out_dir / f'top_bad_overhead_{safe_label}.csv'
         with open(bad_path, 'w', newline='') as f:
             w = csv.DictWriter(f, fieldnames=list(top_bad[0].keys()))

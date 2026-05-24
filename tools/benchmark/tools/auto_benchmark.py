@@ -609,7 +609,8 @@ class AutoBenchmarkNode(Node):
         return result
 
 
-def _failed_result(tp_ms=0.0, te_ms=0.0, topo_ms=None, mem=0) -> dict:
+def _failed_result(tp_ms=0.0, te_ms=0.0, topo_ms=None, mem=0,
+                    failure_reason='surface_extraction_failed') -> dict:
     return {
         'success': False,
         'planning_time_ms': None,
@@ -622,6 +623,7 @@ def _failed_result(tp_ms=0.0, te_ms=0.0, topo_ms=None, mem=0) -> dict:
         'memory_usage_bytes': mem,
         'total_time_ms': None,
         'trials_count': 0,
+        'failure_reason': failure_reason,
     }
 
 
@@ -834,7 +836,8 @@ def main():
 
             voxel_centers, tp_ms = get_scene(row)
             if voxel_centers is None:
-                results_by_idx[id(row)] = _failed_result()
+                results_by_idx[id(row)] = _failed_result(
+                    failure_reason='surface_extraction_failed')
                 continue
 
             if sk != prev_scene_key:
@@ -846,12 +849,14 @@ def main():
                 ok, te_ms, _, topo_mem = node.set_voxel_map(
                     voxel_centers, [start_s], float(row['resolution']))
                 if not ok:
-                    results_by_idx[id(row)] = _failed_result(tp_ms=tp_ms)
+                    results_by_idx[id(row)] = _failed_result(
+                        tp_ms=tp_ms, failure_reason='insufficient_walkable_voxels')
                     continue
                 ok2, topo_ms, topo_extra = node.build_topo_map()
                 if not ok2:
                     results_by_idx[id(row)] = _failed_result(
-                        tp_ms=tp_ms, te_ms=te_ms, mem=topo_mem)
+                        tp_ms=tp_ms, te_ms=te_ms, mem=topo_mem,
+                        failure_reason='precompute_timeout')
                     continue
                 prev_seed_key = seed_k
 

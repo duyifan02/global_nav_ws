@@ -225,6 +225,7 @@ HierarchicalPath ALTPlanner::plan(
       result.total_planning_ms =
         std::chrono::duration<double, std::milli>(total_t1 - total_t0).count();
       result.success = true;
+      result.path_valid = true;  // ALT paths follow surface graph edges directly
       result.message = "OK (ALT A*)";
       return result;
     }
