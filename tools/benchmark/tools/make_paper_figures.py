@@ -238,6 +238,9 @@ def main():
         ('JPS_3D', hd / '100_jps_01m.csv'),
         ('Flat A*', hd / '100_flat_01m.csv'),
         ('PRM 1k', hd / '100_prm_1k_01m.csv'),
+        ('PRM 2k', hd / '100_prm_2000_01m_500q.csv'),
+        ('PRM 5k', hd / '100_prm_5000_01m_500q.csv'),
+        ('PRM 10k', hd / '100_prm_10000_01m_500q.csv'),
         ('Grid-HPA*', hd / '100_grid_tau5_01m.csv'),
         ('No-Stitch', hd / '100_no_stitch_tau5_01m.csv'),
     ]:
@@ -281,6 +284,9 @@ def main():
         ('No-Stitch', hd / '100_no_stitch_tau5_01m.csv'),
         ('Grid-HPA*', hd / '100_grid_tau5_01m.csv'),
         ('PRM (1k)', hd / '100_prm_1k_01m.csv'),
+        ('PRM (2k)', hd / '100_prm_2000_01m_500q.csv'),
+        ('PRM (5k)', hd / '100_prm_5000_01m_500q.csv'),
+        ('PRM (10k)', hd / '100_prm_10000_01m_500q.csv'),
         ('ALT (L=16)', hd / '100_alt_01m_500q.csv'),
         ('TG K=1', hd / '100_tg_auto_k1_01m_500q.csv'),
         ('TG K=5', hd / '100_tg_auto_k5_01m_500q.csv'),
@@ -318,6 +324,64 @@ def main():
     with open(abl_path, 'w') as f:
         f.write('\n'.join(abl_lines))
     print(f"  Written: {abl_path}")
+
+    # ── Figure F: Tau sensitivity data ─────────────────────────────────────
+
+    print("\n=== Figure F: Tau Sensitivity ===")
+    tau_rows = []
+    alt_for_tau = load(str(hd / '100_alt_01m_500q.csv'))
+    if alt_for_tau:
+        for tau in [3, 4, 5, 6]:
+            tf = hd / f'100_tg_tau{tau}_k5_01m_500q.csv'
+            t = load(str(tf))
+            if not t:
+                print(f"  [SKIP] tau={tau}: {tf}")
+                continue
+            t_s = method_stats(t, alt_for_tau, f'TG tau={tau} K=5')
+            a_s = method_stats(alt_for_tau, label='ALT')
+            speedup = a_s['ts_mean'] / t_s['ts_mean'] if t_s['ts_mean'] > 0 else 0
+            tau_rows.append({
+                'tau': tau,
+                'succ_rate': f"{t_s['rate']:.1f}",
+                'valid_rate': f"{t_s['valid_rate']:.1f}",
+                'mean_query_ms': f"{t_s['ts_mean']:.4f}",
+                'p95_query_ms': f"{t_s['ts_p95']:.4f}",
+                'mean_path_m': f"{t_s['path_mean']:.2f}",
+                'oh_mean': f"{t_s['oh_mean']:.2f}",
+                'oh_med': f"{t_s['oh_med']:.2f}",
+                'speedup': f"{speedup:.2f}",
+                'topo_ms': f"{t_s['topo_mean']:.1f}",
+            })
+
+        # Also include auto-tau
+        auto_tf = hd / '100_tg_auto_k5_01m_500q.csv'
+        auto_t = load(str(auto_tf))
+        if auto_t:
+            auto_s = method_stats(auto_t, alt_for_tau, 'TG auto K=5')
+            a_s = method_stats(alt_for_tau, label='ALT')
+            speedup = a_s['ts_mean'] / auto_s['ts_mean'] if auto_s['ts_mean'] > 0 else 0
+            tau_rows.append({
+                'tau': 'auto',
+                'succ_rate': f"{auto_s['rate']:.1f}",
+                'valid_rate': f"{auto_s['valid_rate']:.1f}",
+                'mean_query_ms': f"{auto_s['ts_mean']:.4f}",
+                'p95_query_ms': f"{auto_s['ts_p95']:.4f}",
+                'mean_path_m': f"{auto_s['path_mean']:.2f}",
+                'oh_mean': f"{auto_s['oh_mean']:.2f}",
+                'oh_med': f"{auto_s['oh_med']:.2f}",
+                'speedup': f"{speedup:.2f}",
+                'topo_ms': f"{auto_s['topo_mean']:.1f}",
+            })
+
+    if tau_rows:
+        tau_path = out / 'data' / 'tau_sensitivity_hm3d_01m.csv'
+        with open(tau_path, 'w', newline='') as f:
+            w = csv.DictWriter(f, fieldnames=list(tau_rows[0].keys()))
+            w.writeheader()
+            w.writerows(tau_rows)
+        print(f"  Written: {tau_path} ({len(tau_rows)} rows)")
+    else:
+        print("  [SKIP] No tau sweep data found")
 
     print("\n=== DONE ===")
 

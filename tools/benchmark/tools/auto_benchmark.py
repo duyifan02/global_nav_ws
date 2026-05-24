@@ -599,10 +599,11 @@ class AutoBenchmarkNode(Node):
         result.update(last_diag)
         # Add scene-level precompute stats
         if topo_extra:
-            for k in ('tg_nodes', 'tg_edges', 'tg_connected_components',
+            for k in ('num_rooms', 'tg_nodes', 'tg_edges', 'tg_connected_components',
                        'skipped_rooms', 'transfer_coverage', 'selected_tau',
                        'num_room_edges', 'num_portals', 'max_portals_per_edge',
                        'portal_k_effective', 'tau_mode',
+                       'persistence_time_ms', 'segmentation_time_ms', 'precompute_time_ms',
                        'tau_selection_time_ms', 'tg_build_time_ms', 'alt_landmark_time_ms'):
                 if k in topo_extra:
                     result[k] = topo_extra[k]
