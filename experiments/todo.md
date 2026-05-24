@@ -1119,10 +1119,10 @@ figures/speedup_vs_query_distance.pdf
 ## 有时间再做
 
 ```text
-[ ] P6.1 PRM 2k/5k/10k sweep
+[~] P6.1 PRM 2k/5k/10k sweep                        # QUEUED on remote after P1.3, run_p6_prm_sweep.sh
 [x] P6.2 CH / Hub Labeling feasibility analysis     # experiments/notes/graph_speedup_baselines.md
 [x] P7 0.05m timeout protocol                       # analyze_timeout.py + timeout_breakdown.csv
-[x] P8 paper-ready figures/tables                    # make_paper_figures.py → LaTeX tables + CSV data
+[x] P8 paper-ready figures/tables                    # make_paper_figures.py + plot_paper_figures.py → LaTeX + PDF
 ```
 
 ---
