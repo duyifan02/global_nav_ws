@@ -1,2 +1,4 @@
-resolution,alt_ts_mean,alt_ts_p95,tg_ts_mean,tg_ts_p95,speedup,oh_mean,oh_med,alt_succ_rate,tg_succ_rate
-0.1,0.1655,0.3743,0.1804,1.6000,0.92,1.14,1.61,88.6,91.2
+resolution,alt_ts_mean,alt_ts_med,alt_ts_p95,tg_ts_mean,tg_ts_med,tg_ts_p95,speedup_mean,speedup_med,paired_speedup,pct_faster,oh_mean,oh_med,alt_succ_rate,tg_succ_rate
+0.1,0.1655,0.0855,0.3743,0.1804,0.0495,1.6000,0.92,1.73,1.76,75.9,1.14,1.61,88.6,91.2
+0.075,0.3092,0.1465,1.6749,0.2293,0.0706,1.6529,1.35,2.07,1.85,81.2,10.56,4.59,80.6,82.4
+0.05,0.4727,0.2389,1.8234,0.3210,0.1066,1.6939,1.47,2.24,2.03,86.5,8.11,0.22,65.2,63.8

@@ -80,6 +80,13 @@ def sf(v, default=0.0):
 
 def load(path):
     p = Path(path)
+    # Prefer _v2 file if it exists (rerun with bridgeGap + snap fix)
+    if not p.name.endswith('_v2.csv'):
+        v2 = p.parent / (p.stem + '_v2.csv')
+        if v2.exists():
+            print(f"  [v2] Using {v2.name} instead of {p.name}")
+            with open(v2) as f:
+                return list(csv.DictReader(f))
     if not p.exists():
         return None
     with open(p) as f:
@@ -96,10 +103,10 @@ def plot_pareto(data_dir, out_dir):
     fig, ax = plt.subplots()
     # Custom label offsets to avoid overlaps
     label_offsets = {
-        'ALT': (-25, -15),
-        'TG K=1': (15, -15),
-        'TG K=5': (15, 8),
-        'JPS_3D': (-30, 10),
+        'ALT': (-15, -15),
+        'TG K=1': (10, -15),
+        'TG K=5': (-15, 10),
+        'JPS_3D': (15, 10),
         'Flat A*': (15, 10),
         'No-Stitch': (-10, -18),
         'PRM 1k': (-15, 10),
@@ -109,7 +116,7 @@ def plot_pareto(data_dir, out_dir):
     for r in rows:
         m = r['method']
         x = sf(r['mean_overhead_pct'])
-        y = sf(r['mean_query_ms'])
+        y = sf(r.get('med_query_ms', r['mean_query_ms']))
         color = COLORS.get(m, '#333333')
         marker = MARKERS.get(m, 'o')
         ax.scatter(x, y, c=color, marker=marker, s=80, zorder=5, edgecolors='white', linewidths=0.5)
@@ -118,7 +125,7 @@ def plot_pareto(data_dir, out_dir):
                     xytext=(ox, oy), fontsize=7.5, ha='center')
 
     ax.set_xlabel('Mean Path Overhead vs ALT (%)')
-    ax.set_ylabel('Mean Query Time (ms)')
+    ax.set_ylabel('Median Query Time (ms)')
     ax.set_title('Speed vs Quality (HM3D 100, 0.1m)')
     ax.axvline(x=0, color='gray', linestyle=':', alpha=0.5, linewidth=0.8)
 
@@ -257,16 +264,16 @@ def plot_tau_sensitivity(data_dir, out_dir):
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 3.5))
 
     taus = [str(r['tau']) for r in fixed]
-    query_ms = [sf(r['mean_query_ms']) for r in fixed]
+    query_ms = [sf(r.get('med_query_ms', r['mean_query_ms'])) for r in fixed]
     oh_mean = [sf(r['oh_mean']) for r in fixed]
 
     x = range(len(taus))
     bars1 = ax1.bar(x, query_ms, color=COLORS['TG K=5'], alpha=0.8, label='Fixed tau')
     if auto:
-        ax1.axhline(y=sf(auto[0]['mean_query_ms']), color='red', linestyle='--',
+        ax1.axhline(y=sf(auto[0].get('med_query_ms', auto[0]['mean_query_ms'])), color='red', linestyle='--',
                      linewidth=1.2, label='Auto-tau')
     ax1.set_xlabel('Persistence Threshold (tau)')
-    ax1.set_ylabel('Mean Query Time (ms)')
+    ax1.set_ylabel('Median Query Time (ms)')
     ax1.set_xticks(x)
     ax1.set_xticklabels(taus)
     ax1.legend(fontsize=8)
@@ -305,9 +312,9 @@ def plot_resolution_scaling(data_dir, out_dir):
     res = [sf(r['resolution']) for r in rows]
     res_labels = [f"{r['resolution']}m" for r in rows]
 
-    alt_ts = [sf(r['alt_ts_mean']) for r in rows]
-    tg_ts = [sf(r['tg_ts_mean']) for r in rows]
-    speedup = [sf(r['speedup']) for r in rows]
+    alt_ts = [sf(r.get('alt_ts_med', r['alt_ts_mean'])) for r in rows]
+    tg_ts = [sf(r.get('tg_ts_med', r['tg_ts_mean'])) for r in rows]
+    speedup = [sf(r.get('speedup_med', r.get('speedup', 0))) for r in rows]
     oh = [sf(r['oh_mean']) for r in rows]
 
     x = range(len(res))
@@ -315,13 +322,13 @@ def plot_resolution_scaling(data_dir, out_dir):
     ax1.bar([i - w/2 for i in x], alt_ts, w, color=COLORS['ALT'], label='ALT', alpha=0.8)
     ax1.bar([i + w/2 for i in x], tg_ts, w, color=COLORS['TG K=5'], label='TG K=5', alpha=0.8)
     ax1.set_xlabel('Resolution')
-    ax1.set_ylabel('Mean Query Time (ms)')
+    ax1.set_ylabel('Median Query Time (ms)')
     ax1.set_xticks(x)
     ax1.set_xticklabels(res_labels)
     ax1.legend(fontsize=8)
     ax1.set_title('Query Time')
 
-    ax2.bar([i - w/2 for i in x], speedup, w, color=COLORS['TG K=5'], alpha=0.8, label='Speedup')
+    ax2.bar([i - w/2 for i in x], speedup, w, color=COLORS['TG K=5'], alpha=0.8, label='Speedup (median)')
     ax2b = ax2.twinx()
     ax2b.plot(x, oh, color='red', marker='s', linewidth=1.5, markersize=5, label='Overhead %')
     ax2.set_xlabel('Resolution')
@@ -343,15 +350,146 @@ def plot_resolution_scaling(data_dir, out_dir):
     print(f"  Written: {path}")
 
 
+def plot_timing_breakdown(results_dir, out_dir):
+    """Figure G: Query time component breakdown (stacked bar)."""
+    tg_path = Path(results_dir) / 'hm3d_100' / '100_tg_auto_k5_01m_500q.csv'
+    alt_path = Path(results_dir) / 'hm3d_100' / '100_alt_01m_500q.csv'
+    tg = load(tg_path)
+    alt = load(alt_path)
+    if not tg or not alt:
+        print("  [SKIP] timing breakdown: missing data")
+        return
+
+    import statistics as st
+
+    tg_succ = [r for r in tg if r.get('success') == 'True']
+    alt_succ = [r for r in alt if r.get('success') == 'True']
+
+    normal = [r for r in tg_succ if sf(r.get('diag_snap_ms', 0)) < 1.0]
+    all_q = tg_succ
+
+    def med(rows, key): return st.median([sf(r.get(key, 0)) for r in rows]) if rows else 0
+
+    # Component medians for normal queries
+    cats = ['Snap', 'TG A*', 'Stitch', 'Other']
+    n_snap = med(normal, 'diag_snap_ms')
+    n_astar = med(normal, 'diag_tg_astar_ms')
+    n_stitch = med(normal, 'diag_stitch_ms')
+    n_total = med(normal, 'planning_time_ms')
+    n_other = max(0, n_total - n_snap - n_astar - n_stitch)
+    normal_vals = [n_snap, n_astar, n_stitch, n_other]
+
+    # All queries
+    a_snap = med(all_q, 'diag_snap_ms')
+    a_astar = med(all_q, 'diag_tg_astar_ms')
+    a_stitch = med(all_q, 'diag_stitch_ms')
+    a_total = med(all_q, 'planning_time_ms')
+    a_other = max(0, a_total - a_snap - a_astar - a_stitch)
+    all_vals = [a_snap, a_astar, a_stitch, a_other]
+
+    # ALT
+    alt_total = med(alt_succ, 'planning_time_ms')
+
+    fig, ax = plt.subplots(figsize=(5, 3.5))
+    x = [0, 1, 2.2]
+    labels = [f'TG K=5\n(normal, n={len(normal)})',
+              f'TG K=5\n(all, n={len(all_q)})',
+              f'ALT\n(n={len(alt_succ)})']
+
+    colors_stack = ['#FF9800', '#4CAF50', '#2196F3', '#9E9E9E']
+
+    # TG bars: stacked components
+    for ci, (cat, color) in enumerate(zip(cats, colors_stack)):
+        vals = [normal_vals[ci], all_vals[ci]]
+        bot = [sum(normal_vals[:ci]), sum(all_vals[:ci])]
+        ax.bar(x[:2], vals, 0.7, bottom=bot, color=color, label=cat, alpha=0.85)
+
+    # ALT bar: single solid bar (no breakdown available)
+    ax.bar(x[2], alt_total, 0.7, color=COLORS['ALT'], label='ALT (total)', alpha=0.85)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, fontsize=8)
+    ax.set_ylabel('Median Query Time (ms)')
+    ax.set_title('Query Time Breakdown (HM3D 100, 0.1m)')
+    ax.legend(fontsize=8, loc='upper right')
+
+    # Annotate totals
+    for xi, total in zip(x, [n_total, a_total, alt_total]):
+        ax.text(xi, total + 0.003, f'{total:.3f}', ha='center', va='bottom', fontsize=8)
+
+    path = out_dir / 'timing_breakdown_hm3d_01m.pdf'
+    fig.savefig(path)
+    plt.close(fig)
+    print(f"  Written: {path}")
+
+
+def plot_speedup_histogram(results_dir, out_dir):
+    """Figure H: Per-scene speedup distribution histogram."""
+    tg_path = Path(results_dir) / 'hm3d_100' / '100_tg_auto_k5_01m_500q.csv'
+    alt_path = Path(results_dir) / 'hm3d_100' / '100_alt_01m_500q.csv'
+    tg = load(tg_path)
+    alt = load(alt_path)
+    if not tg or not alt:
+        print("  [SKIP] speedup histogram: missing data")
+        return
+
+    import statistics as st
+    from collections import defaultdict
+
+    def succ(rows): return [r for r in rows if r.get('success') == 'True']
+
+    # Per-scene median query time
+    alt_by_scene = defaultdict(list)
+    tg_by_scene = defaultdict(list)
+    for r in succ(alt):
+        alt_by_scene[r['scene']].append(sf(r['planning_time_ms']))
+    for r in succ(tg):
+        tg_by_scene[r['scene']].append(sf(r['planning_time_ms']))
+
+    speedups = []
+    for scene in alt_by_scene:
+        if scene in tg_by_scene and tg_by_scene[scene]:
+            alt_med = st.median(alt_by_scene[scene])
+            tg_med = st.median(tg_by_scene[scene])
+            if tg_med > 0:
+                speedups.append(alt_med / tg_med)
+
+    if not speedups:
+        print("  [SKIP] speedup histogram: no common scenes")
+        return
+
+    fig, ax = plt.subplots(figsize=(5, 3.5))
+    ax.hist(speedups, bins=25, color=COLORS['TG K=5'], alpha=0.8, edgecolor='white')
+    ax.axvline(x=1, color='red', linestyle='--', linewidth=1.2, label='Speedup = 1x')
+    ax.axvline(x=st.median(speedups), color='orange', linestyle='-', linewidth=1.5,
+               label=f'Median = {st.median(speedups):.2f}x')
+    ax.set_xlabel('Per-Scene Median Speedup (TG K=5 vs ALT)')
+    ax.set_ylabel('Number of Scenes')
+    ax.set_title(f'Speedup Distribution (HM3D, n={len(speedups)} scenes)')
+    ax.legend(fontsize=8)
+
+    faster = sum(1 for s in speedups if s > 1)
+    ax.text(0.98, 0.95, f'TG faster: {faster}/{len(speedups)} ({100*faster/len(speedups):.0f}%)',
+            transform=ax.transAxes, ha='right', va='top', fontsize=8,
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='wheat', alpha=0.8))
+
+    path = out_dir / 'speedup_histogram_hm3d_01m.pdf'
+    fig.savefig(path)
+    plt.close(fig)
+    print(f"  Written: {path}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--data-dir', default='experiments/figures/data')
     ap.add_argument('--analysis-dir', default='experiments/results/analysis')
+    ap.add_argument('--results-dir', default='experiments/results')
     ap.add_argument('--out-dir', default='experiments/figures')
     args = ap.parse_args()
 
     dd = Path(args.data_dir)
     ad = Path(args.analysis_dir)
+    rd = Path(args.results_dir)
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -374,6 +512,12 @@ def main():
 
     print("\n--- Resolution Scaling ---")
     plot_resolution_scaling(dd, out)
+
+    print("\n--- Timing Breakdown ---")
+    plot_timing_breakdown(rd, out)
+
+    print("\n--- Speedup Histogram ---")
+    plot_speedup_histogram(rd, out)
 
     print("\n=== DONE ===")
 
