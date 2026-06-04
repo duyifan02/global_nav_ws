@@ -161,8 +161,13 @@ def _ensure_voxel_io():
 
 
 def _load_scene(row: dict, occmap_dir: Optional[str],
-                logger=None) -> Tuple[np.ndarray, float]:
-    """Load scene voxels for one CSV row. Returns (voxel_centers, tp_ms)."""
+                logger=None,
+                save_occmap_dir: Optional[str] = None) -> Tuple[np.ndarray, float]:
+    """Load scene voxels for one CSV row. Returns (voxel_centers, tp_ms).
+
+    If save_occmap_dir is set, voxelized results are saved as .npy for future reuse.
+    Convention matches find_npy_for_scan: {dir}/{scan_id}/{scan_id}_res{res}.npy
+    """
     vio = _ensure_voxel_io()
     obj_path = row.get('obj_path', '').strip()
     scene = row.get('scene', 'unknown')
@@ -179,6 +184,24 @@ def _load_scene(row: dict, occmap_dir: Optional[str],
 
     if obj_path and obj_path.lower() != 'none':
         pts, tp_ms = vio.load_voxels(obj_path, resolution, logger=logger)
+        # Save to .npy cache if requested
+        if save_occmap_dir and len(pts) > 0:
+            # Extract scan_id: try voxel_io convention first, then filename stem
+            scan_id = None
+            try:
+                from occmap_tools.voxel_io import _scan_id_from_obj_path
+                scan_id = _scan_id_from_obj_path(obj_path)
+            except Exception:
+                pass
+            if scan_id is None:
+                scan_id = Path(obj_path).stem  # e.g. "3t8DB4Uzvkt" from ".../3t8DB4Uzvkt.obj"
+            if scan_id:
+                npy_dir = Path(save_occmap_dir) / scan_id
+                npy_dir.mkdir(parents=True, exist_ok=True)
+                save_path = npy_dir / f'{scan_id}_res{resolution}.npy'
+                np.save(str(save_path), pts)
+                if logger:
+                    logger.info(f'Saved {len(pts)} voxels to {save_path}')
         return pts, tp_ms
 
     # PCD fallback
@@ -708,6 +731,9 @@ def main():
                         help='Pre-built occmap dir (from convert_all_meshes.py). '
                              'If set, loads .npy instead of real-time OBJ voxelization — '
                              'deterministic & fast.')
+    parser.add_argument('--save-occmap-dir', type=str, default=None,
+                        help='If set, save voxelized results as .npy to this directory '
+                             'for future reuse with --occmap-dir.')
     parser.add_argument('--service-timeout', type=float, default=10.0)
     parser.add_argument('--map-load-timeout', type=float, default=120.0)
 
@@ -795,7 +821,8 @@ def main():
                 resolution = float(row.get('resolution', 0.1))
                 print(f'\n[SCENE] 加载场景: scene={scene}, res={resolution}m')
                 try:
-                    pts, tp = _load_scene(row, args.occmap_dir, node.get_logger())
+                    pts, tp = _load_scene(row, args.occmap_dir, node.get_logger(),
+                                          save_occmap_dir=args.save_occmap_dir)
                     print(f'  [SCENE] {len(pts)} 体素, Tp={tp:.1f}ms')
                     scene_cache[sk] = (pts, tp)
                 except Exception as exc:

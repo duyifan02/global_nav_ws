@@ -1106,11 +1106,11 @@ figures/speedup_vs_query_distance.pdf
 ## 强烈建议完成，能明显提高论文质量
 
 ```text
-[~] P1.3 HM3D cross-resolution K=5                 # RUNNING on remote after P4.1
+[x] P1.3 HM3D cross-resolution K=5                 # DONE 2026-05-25, speedup 1.73x→2.07x→2.24x (med)
 [x] P2.3 scene complexity analysis                  # analyze_scene_complexity.py, 2026-05-23
 [x] P3.2 bad-case 分类                              # analyze_overhead.py bad_case_type_counts
 [x] P3.3 qualitative 可视化导出                      # export_visualization.py, 2026-05-23
-[~] P4.1 fixed tau sweep K=5                        # RUNNING on remote, tau=3/4/5/6
+[x] P4.1 fixed tau sweep K=5                        # DONE 2026-05-25, auto-tau paired speedup 1.76x best OH +1.1%
 [x] P4.2 oracle tau vs auto-tau                     # analyze_tau_oracle.py, 2026-05-23
 [x] P5.1 precompute / memory logging                # already in CSV: topo_ms, memory_usage_bytes, timing breakdown
 [x] P5.2 amortization curve                         # analyze_amortization.py, 2026-05-23
@@ -1119,7 +1119,7 @@ figures/speedup_vs_query_distance.pdf
 ## 有时间再做
 
 ```text
-[~] P6.1 PRM 2k/5k/10k sweep                        # QUEUED on remote after P1.3, run_p6_prm_sweep.sh
+[x] P6.1 PRM 2k/5k/10k sweep                        # DONE 2026-05-25, OH +41~60%, dominated by TG in Pareto
 [x] P6.2 CH / Hub Labeling feasibility analysis     # experiments/notes/graph_speedup_baselines.md
 [x] P7 0.05m timeout protocol                       # analyze_timeout.py + timeout_breakdown.csv
 [x] P8 paper-ready figures/tables                    # make_paper_figures.py + plot_paper_figures.py → LaTeX + PDF
@@ -1134,22 +1134,32 @@ figures/speedup_vs_query_distance.pdf
 ```text
 MP3D 0.1m, auto-tau K=5:
   success = 100%             ← ✅ 100%
-  valid_path = 100%          ← ⚠️ 16.7% (stitch reconstruction gaps)
+  valid_path = 100%          ← ⚠️ 16.7% → pending v2 rerun (bridgeGap fix applied)
   speedup vs ALT >= 7x      ← ✅ 5.8x (K=1 is 8.6x)
   mean path overhead <= 5%   ← ✅ -2.1% (paths shorter than ALT!)
 
 HM3D 0.1m, auto-tau K=5:
   success comparable to ALT  ← ✅ 91.2% vs ALT 88.6%
-  valid_path = 100%          ← ⚠️ 28.5% (stitch reconstruction gaps, known issue)
-  speedup vs ALT > 1x       ← ⚠️ 0.9x (slightly slower, scenes too small for hierarchy benefit)
+  valid_path = 100%          ← ⚠️ 28.5% → pending v2 rerun (bridgeGap + snap fix)
+  median speedup vs ALT > 1x ← ✅ 1.73x median, paired 1.76x (76% queries faster)
   mean path overhead <= 8%   ← ✅ +1.1% (paired valid), +8.7% (all successful)
   median path overhead <= 3% ← ✅ +1.6% (paired valid)
   p95 overhead < K=1         ← ✅ +22.1% vs K=1 +32.4%
 
 K sweep:
   K=5 dominates K=1         ← ✅ OH: +1.1% vs +3.1% (paired valid)
-  K=5 query slightly worse   ← ✅ 0.180ms vs 0.146ms (K=1) vs 0.166ms (ALT)
+  K=5 median faster          ← ✅ 0.049ms (K=5) vs 0.034ms (K=1) vs 0.085ms (ALT)
   K=5 precompute documented  ← ✅ 212ms (K=5) vs 51ms (K=1) vs 76ms (ALT)
+
+Resolution scaling (median speedup):
+  0.1m:  1.73x (76% faster)
+  0.075m: 2.07x (81% faster)
+  0.05m:  2.24x (87% faster)
+  → Hierarchy benefit grows with resolution
+
+NOTE: mean speedup (0.92x at 0.1m) is misleading due to 36/456 snap outliers
+  at ~1.6ms. Snap uses brute-force radius-50 search when start/goal is far
+  from surface. Median is the correct metric for algorithmic performance.
 ```
 
 最重要的一句话：

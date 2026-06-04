@@ -40,17 +40,18 @@ def query_key(row: dict) -> str:
 
 def load(path):
     p = Path(path)
-    # Prefer _v2 file if it exists (rerun with bridgeGap + snap fix)
-    if not p.name.endswith('_v2.csv'):
-        v2 = p.parent / (p.stem + '_v2.csv')
-        if v2.exists():
-            print(f"  [v2] Using {v2.name} instead of {p.name}")
-            with open(v2) as f:
+    # Prefer best available version: v3 > v2 > original
+    stem = p.stem
+    if stem.endswith('_v2') or stem.endswith('_v3'):
+        stem = stem[:-3]
+    for suffix in ('_v3', '_v2', ''):
+        candidate = p.parent / (stem + suffix + '.csv')
+        if candidate.exists():
+            if suffix:
+                print(f"  [{suffix[1:]}] Using {candidate.name} instead of {p.name}")
+            with open(candidate) as f:
                 return list(csv.DictReader(f))
-    if not p.exists():
-        return None
-    with open(p) as f:
-        return list(csv.DictReader(f))
+    return None
 
 
 def succ_rows(rows):
@@ -197,6 +198,7 @@ def main():
     alt = load(str(hd / '100_alt_01m_500q.csv'))
     if alt:
         cdf_rows = []
+        # TG K=1 and K=5
         for k in [1, 5]:
             tg = load(str(hd / f'100_tg_auto_k{k}_01m_500q.csv'))
             if not tg:
@@ -206,6 +208,27 @@ def main():
             for i, oh in enumerate(ohs):
                 cdf_rows.append({'method': f'K={k}', 'overhead_pct': f'{oh:.4f}',
                                  'cdf': f'{(i+1)/n:.6f}'})
+        # Ablation baselines (use files without 500q suffix)
+        extra_methods = [
+            ('Grid-HPA*', hd / '100_grid_tau5_01m.csv'),
+            ('No-Stitch', hd / '100_no_stitch_tau5_01m.csv'),
+            ('JPS_3D',    hd / '100_jps_01m.csv'),
+            ('Flat A*',   hd / '100_flat_01m.csv'),
+        ]
+        for label, fpath in extra_methods:
+            m = load(str(fpath))
+            if not m:
+                print(f"  [SKIP] {label}: file not found")
+                continue
+            ohs = sorted(paired_overhead(alt, m))
+            n = len(ohs)
+            if n == 0:
+                print(f"  [SKIP] {label}: no paired queries")
+                continue
+            for i, oh in enumerate(ohs):
+                cdf_rows.append({'method': label, 'overhead_pct': f'{oh:.4f}',
+                                 'cdf': f'{(i+1)/n:.6f}'})
+            print(f"  {label}: {n} paired queries, median={ohs[n//2]:.2f}%")
 
         if cdf_rows:
             cdf_path = out / 'data' / 'overhead_cdf_hm3d_01m.csv'
@@ -297,6 +320,7 @@ def main():
                 'med_query_ms': f"{st['ts_med']:.4f}",
                 'p95_query_ms': f"{st['ts_p95']:.4f}",
                 'mean_overhead_pct': f"{st['oh_mean']:.2f}" if st['n_paired'] else '0',
+                'med_overhead_pct': f"{st['oh_med']:.2f}" if st['n_paired'] else '0',
                 'success_rate': f"{st['rate']:.1f}",
                 'valid_rate': f"{st['valid_rate']:.1f}",
                 'topo_ms': f"{st['topo_mean']:.1f}",

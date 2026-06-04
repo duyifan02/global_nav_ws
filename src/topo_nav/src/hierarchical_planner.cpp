@@ -286,20 +286,24 @@ void HierarchicalPlanner::buildTransitionGraph()
   tg_num_nodes_ = static_cast<int>(tg_nodes_.size());
   tg_adj_.assign(tg_num_nodes_, {});
 
-  // Crossing edges: all-to-all between room_i and room_j portals of each edge
+  // Crossing edges: paired portals only (transitions_i[k] ↔ transitions_j[k]).
+  // Paired portals are guaranteed 26-adjacent from room_segmenter, so boundary
+  // crossings never need bridgeGap and produce valid 26-adjacent paths.
   for (int eidx = 0; eidx < E; ++eidx) {
     const auto & ep = tg_edge_portals_[eidx];
-    for (int ni : ep.nodes_i) {
-      for (int nj : ep.nodes_j) {
-        const auto & a = graph[tg_nodes_[ni].surf_idx];
-        const auto & b = graph[tg_nodes_[nj].surf_idx];
-        double dx = (b.x - a.x) * res;
-        double dy = (b.y - a.y) * res;
-        double dz = (b.z - a.z) * res;
-        double cross_cost = std::sqrt(dx * dx + dy * dy + dz * dz);
-        tg_adj_[ni].emplace_back(nj, cross_cost);
-        tg_adj_[nj].emplace_back(ni, cross_cost);
-      }
+    const int K_pairs = static_cast<int>(
+        std::min(ep.nodes_i.size(), ep.nodes_j.size()));
+    for (int k = 0; k < K_pairs; ++k) {
+      int ni = ep.nodes_i[k];
+      int nj = ep.nodes_j[k];
+      const auto & a = graph[tg_nodes_[ni].surf_idx];
+      const auto & b = graph[tg_nodes_[nj].surf_idx];
+      double dx = (b.x - a.x) * res;
+      double dy = (b.y - a.y) * res;
+      double dz = (b.z - a.z) * res;
+      double cross_cost = std::sqrt(dx * dx + dy * dy + dz * dz);
+      tg_adj_[ni].emplace_back(nj, cross_cost);
+      tg_adj_[nj].emplace_back(ni, cross_cost);
     }
   }
 
@@ -1025,6 +1029,41 @@ std::vector<int> HierarchicalPlanner::stitchPath(
       dst.insert(dst.end(), src.begin(), src.end());
   };
 
+  // Bridge gap between two surface voxels at room boundaries.
+  // If they're 26-adjacent (or identical), just push the target.
+  // Otherwise, run a short unrestricted A* to connect them.
+  const auto & graph = vmap_->getSurfaceGraph();
+  auto bridgeGap = [&](std::vector<int> & dst, int target) {
+    if (dst.empty() || dst.back() == target) { dst.push_back(target); return; }
+    const int last = dst.back();
+    // Check 26-adjacency
+    int dx = std::abs(graph[last].x - graph[target].x);
+    int dy = std::abs(graph[last].y - graph[target].y);
+    int dz = std::abs(graph[last].z - graph[target].z);
+    if (dx <= 1 && dy <= 1 && dz <= 1) {
+      dst.push_back(target);
+    } else {
+      // Non-adjacent: with paired portal selection this branch should be rare.
+      // Run a short local A* restricted to the two rooms sharing this boundary.
+      std::unordered_set<int> local_rooms;
+      const int r_last   = rg_.room_labels[last];
+      const int r_target = rg_.room_labels[target];
+      if (r_last   >= 0) local_rooms.insert(r_last);
+      if (r_target >= 0) local_rooms.insert(r_target);
+      auto bridge = voxelAstar(last, target, -1, nullptr,
+                               local_rooms.empty() ? nullptr : &local_rooms);
+      if (bridge.empty()) {
+        // Local rooms A* failed; try unrestricted as last resort
+        bridge = voxelAstar(last, target, -1, nullptr, nullptr);
+      }
+      if (!bridge.empty()) {
+        append(dst, bridge);
+      } else {
+        dst.push_back(target);
+      }
+    }
+  };
+
   // Walk parent chain from 'from' toward 'target' in a trans_field.
   // Returns {from, ..., target} on success, empty on failure.
   auto walkToTarget = [](const TransitionField & field, int from, int target)
@@ -1117,8 +1156,8 @@ std::vector<int> HierarchicalPlanner::stitchPath(
             t_enter, rg_.room_labels[t_enter],
             t_exit, rg_.room_labels[t_exit]);
 
-    // Bridge across edge boundary (one extra voxel hop between rooms)
-    if (path.empty() || path.back() != t_enter) path.push_back(t_enter);
+    // Bridge across edge boundary (local A* if portals not 26-adjacent)
+    bridgeGap(path, t_enter);
     if (t_enter == t_exit) { fprintf(stderr, "[stitch-mid%zu] same voxel, skip\n", i); continue; }
 
     ++seg_total;
@@ -1180,7 +1219,7 @@ std::vector<int> HierarchicalPlanner::stitchPath(
             t_enter, rg_.room_labels[t_enter],
             goal_surf, rg_.room_labels[goal_surf], e_last);
 
-    if (path.empty() || path.back() != t_enter) path.push_back(t_enter);
+    bridgeGap(path, t_enter);
     if (t_enter == goal_surf) {
       fprintf(stderr, "[stitch-fin] same voxel\n");
       ++seg_cached;
@@ -1812,13 +1851,14 @@ void HierarchicalPlanner::validatePath(
     }
   }
 
-  // Check 26-neighbor connectivity and surface membership
+  // Check surface-graph connectivity: every consecutive pair must be actual
+  // neighbors in the surface graph (which uses Z-tolerance, not strict 26-adj).
+  const auto & all_nbrs = vmap_->getAllNeighbors();
   int bad_edges = 0;
   double max_step = 0.0;
   const int graph_size = static_cast<int>(graph.size());
 
   for (int i = 0; i < N; ++i) {
-    // Surface membership
     if (surf_path[i] < 0 || surf_path[i] >= graph_size) {
       result.path_valid = false;
       result.invalid_reason = "out_of_bounds_idx";
@@ -1827,17 +1867,23 @@ void HierarchicalPlanner::validatePath(
     }
     if (i == 0) continue;
 
-    const auto & a = graph[surf_path[i - 1]];
-    const auto & b = graph[surf_path[i]];
+    const int prev = surf_path[i - 1];
+    const int cur  = surf_path[i];
+    const auto & a = graph[prev];
+    const auto & b = graph[cur];
     int dx = std::abs(b.x - a.x);
     int dy = std::abs(b.y - a.y);
     int dz = std::abs(b.z - a.z);
     double step = std::sqrt(static_cast<double>(dx * dx + dy * dy + dz * dz));
     if (step > max_step) max_step = step;
 
-    // 26-neighbor check: max displacement in each axis is 1
-    if (dx > 1 || dy > 1 || dz > 1) {
-      ++bad_edges;
+    // Check actual surface-graph adjacency
+    if (prev != cur) {
+      bool found = false;
+      for (int ni = 0; ni < a.neighbor_count; ++ni) {
+        if (all_nbrs[a.neighbor_start + ni] == cur) { found = true; break; }
+      }
+      if (!found) ++bad_edges;
     }
   }
 

@@ -25,14 +25,19 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 
 # Paper style
+FONT_SIZE = 10
+TICK_SIZE = 9
+ANNOT_SIZE = 8
+PAPER_FIG_DIR = Path('/data2/dyf/papers/Beyond_Geometry/paper_Extended/figures')
+
 plt.rcParams.update({
-    'font.size': 10,
+    'font.size': FONT_SIZE,
     'font.family': 'serif',
-    'axes.labelsize': 11,
-    'axes.titlesize': 12,
-    'xtick.labelsize': 9,
-    'ytick.labelsize': 9,
-    'legend.fontsize': 9,
+    'axes.labelsize': FONT_SIZE,
+    'axes.titlesize': FONT_SIZE,
+    'xtick.labelsize': TICK_SIZE,
+    'ytick.labelsize': TICK_SIZE,
+    'legend.fontsize': ANNOT_SIZE,
     'figure.figsize': (4.5, 3.5),
     'figure.dpi': 150,
     'savefig.dpi': 300,
@@ -42,16 +47,25 @@ plt.rcParams.update({
     'grid.alpha': 0.3,
 })
 
+
+def save_figure(fig, path, paper_name=None):
+    fig.savefig(path, bbox_inches='tight', pad_inches=0.05)
+    print(f"  Written: {path}")
+    if paper_name:
+        paper_path = PAPER_FIG_DIR / paper_name
+        fig.savefig(paper_path, bbox_inches='tight', pad_inches=0.05)
+        print(f"  Written: {paper_path}")
+
 COLORS = {
     'ALT': '#2196F3',
     'TG K=1': '#FF9800',
     'TG K=5': '#4CAF50',
     'JPS_3D': '#9E9E9E',
     'Flat A*': '#795548',
-    'PRM 1k': '#E91E63',
-    'PRM 2k': '#F06292',
-    'PRM 5k': '#F48FB1',
-    'PRM 10k': '#F8BBD0',
+    'PRM 1k': '#D32F2F',   # red
+    'PRM 2k': '#FBC02D',   # yellow
+    'PRM 5k': '#1976D2',   # blue
+    'PRM 10k': '#388E3C',  # green
     'Grid-HPA*': '#9C27B0',
     'No-Stitch': '#607D8B',
 }
@@ -80,60 +94,105 @@ def sf(v, default=0.0):
 
 def load(path):
     p = Path(path)
-    # Prefer _v2 file if it exists (rerun with bridgeGap + snap fix)
-    if not p.name.endswith('_v2.csv'):
-        v2 = p.parent / (p.stem + '_v2.csv')
-        if v2.exists():
-            print(f"  [v2] Using {v2.name} instead of {p.name}")
-            with open(v2) as f:
+    stem = p.stem
+    # Strip existing version suffix to find base name
+    if stem.endswith('_v2') or stem.endswith('_v3'):
+        stem = stem[:-3]
+    # Prefer v3 > v2 > original
+    for suffix in ('_v3', '_v2', ''):
+        candidate = p.parent / (stem + suffix + '.csv')
+        if candidate.exists():
+            if suffix:
+                print(f"  [{suffix[1:]}] Using {candidate.name}")
+            with open(candidate) as f:
                 return list(csv.DictReader(f))
-    if not p.exists():
-        return None
-    with open(p) as f:
-        return list(csv.DictReader(f))
+    return None
 
 
 def plot_pareto(data_dir, out_dir):
-    """Figure B: Speed vs quality Pareto plot."""
+    """Figure B: Speed/quality Pareto as stacked Cleveland dot plots."""
     rows = load(data_dir / 'pareto_hm3d_01m.csv')
     if not rows:
         print("  [SKIP] pareto: no data")
         return
 
-    fig, ax = plt.subplots()
-    # Custom label offsets to avoid overlaps
-    label_offsets = {
-        'ALT': (-15, -15),
-        'TG K=1': (10, -15),
-        'TG K=5': (-15, 10),
-        'JPS_3D': (15, 10),
-        'Flat A*': (15, 10),
-        'No-Stitch': (-10, -18),
-        'PRM 1k': (-15, 10),
-        'Grid-HPA*': (-20, -18),
-    }
-
+    # Exclude PRM variants from the speed-quality Pareto: PRM returns paths
+    # with 0% surface-graph validity, so its overhead is not comparable.
+    excluded = {'PRM 1k', 'PRM 2k', 'PRM 5k', 'PRM 10k'}
+    kept = []
     for r in rows:
-        m = r['method']
-        x = sf(r['mean_overhead_pct'])
-        y = sf(r.get('med_query_ms', r['mean_query_ms']))
-        color = COLORS.get(m, '#333333')
-        marker = MARKERS.get(m, 'o')
-        ax.scatter(x, y, c=color, marker=marker, s=80, zorder=5, edgecolors='white', linewidths=0.5)
-        ox, oy = label_offsets.get(m, (10, 8))
-        ax.annotate(m, (x, y), textcoords="offset points",
-                    xytext=(ox, oy), fontsize=7.5, ha='center')
+        if r['method'] in excluded:
+            continue
+        kept.append({
+            'method': r['method'],
+            'query_ms': sf(r.get('med_query_ms', r.get('mean_query_ms'))),
+            'overhead_pct': sf(r.get('med_overhead_pct') or r.get('mean_overhead_pct')),
+        })
 
-    ax.set_xlabel('Mean Path Overhead vs ALT (%)')
-    ax.set_ylabel('Median Query Time (ms)')
-    ax.set_title('Speed vs Quality (HM3D 100, 0.1m)')
-    ax.axvline(x=0, color='gray', linestyle=':', alpha=0.5, linewidth=0.8)
+    kept.sort(key=lambda r: r['query_ms'])
+    y = list(range(len(kept)))
+
+    fig, (ax_a, ax_b) = plt.subplots(
+        2, 1, figsize=(3.5, 5.0), sharey=True,
+        gridspec_kw={'hspace': 0.42},
+    )
+
+    for i, r in enumerate(kept):
+        m = r['method']
+        x = r['query_ms']
+        color = '#000000'
+        marker = 'o'
+        ax_a.hlines(y=i, xmin=0, xmax=x, color=color, linewidth=1.5, alpha=0.7)
+        ax_a.scatter(x, i, color=color, marker=marker, s=70, zorder=5,
+                     edgecolors='white', linewidths=0.5)
+        ax_a.annotate(f"{x:.3f}", xy=(x, i), xytext=(4, 0),
+                      textcoords='offset points', ha='left', va='center',
+                      fontsize=ANNOT_SIZE, clip_on=True)
+
+        oh = r['overhead_pct']
+        xmin, xmax = (oh, 0) if oh < 0 else (0, oh)
+        ax_b.hlines(y=i, xmin=xmin, xmax=xmax, color=color, linewidth=1.5, alpha=0.7)
+        ax_b.scatter(oh, i, color=color, marker=marker, s=70, zorder=5,
+                     edgecolors='white', linewidths=0.5)
+        if m == 'ALT':
+            label = 'baseline'
+        elif abs(oh) < 0.05:
+            label = '0%'
+        else:
+            label = f"{oh:+.1f}%"
+        ax_b.annotate(label, xy=(oh, i), xytext=(4, 0), textcoords='offset points',
+                      ha='left', va='center', fontsize=ANNOT_SIZE)
+
+    labels = [r['method'] for r in kept]
+    for ax in (ax_a, ax_b):
+        ax.set_yticks(y)
+        ax.set_yticklabels(labels)
+        ax.grid(axis='x', alpha=0.3)
+        ax.grid(axis='y', visible=False)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    ax_a.invert_yaxis()
+    ax_a.set_xlim(0, max(r['query_ms'] for r in kept) * 1.22)
+    ax_a.set_xlabel('Median Query Time (ms)')
+    ax_a.set_title('(a) Median Query Time (ms)', loc='left')
+
+    oh_vals = [r['overhead_pct'] for r in kept]
+    oh_min = min(oh_vals + [0])
+    oh_max = max(oh_vals + [0])
+    left_pad = max((oh_max - oh_min) * 0.08, 2.0)
+    right_pad = max((oh_max - oh_min) * 0.28, 8.0)
+    ax_b.set_xlim(oh_min - left_pad, oh_max + right_pad)
+    ax_b.axvline(x=0, color='gray', linestyle=':', alpha=0.5, linewidth=0.8)
+    ax_b.tick_params(labelleft=True)
+    ax_b.set_xlabel('Median Path Overhead vs ALT (%)')
+    ax_b.set_title('(b) Median Path Overhead vs ALT (%)', loc='left')
+
+    fig.align_ylabels()
 
     path = out_dir / 'pareto_hm3d_01m.pdf'
-    fig.savefig(path)
+    save_figure(fig, path, 'pareto.pdf')
     plt.close(fig)
-    print(f"  Written: {path}")
-
 
 def plot_overhead_cdf(data_dir, out_dir):
     """Figure C: Overhead CDF."""
@@ -142,30 +201,73 @@ def plot_overhead_cdf(data_dir, out_dir):
         print("  [SKIP] overhead CDF: no data")
         return
 
-    fig, ax = plt.subplots()
-    methods = sorted(set(r['method'] for r in rows))
-    for method in methods:
+    # Display name → (color, linestyle, linewidth, zorder)
+    METHOD_STYLE = {
+        'K=1':      ('TG K=1',     COLORS['TG K=1'],    '-',  2.2, 6),
+        'K=5':      ('TG K=5',     COLORS['TG K=5'],    '-',  2.2, 6),
+        'JPS_3D':   ('JPS 3D',     COLORS['JPS_3D'],    '--', 1.4, 4),
+        'Flat A*':  ('Flat A*',    COLORS['Flat A*'],   '--', 1.4, 4),
+        'No-Stitch':('No-Stitch',  COLORS['No-Stitch'], ':',  1.4, 3),
+        'Grid-HPA*':('Grid-HPA*',  COLORS['Grid-HPA*'], '-.',  1.4, 3),
+    }
+
+    # Clip x-axis to -30..60 so heavy tails don't compress the interesting region
+    X_MIN, X_MAX = -30, 60
+
+    fig, ax = plt.subplots(figsize=(5.5, 3.8))
+
+    method_order = ['K=1', 'K=5', 'JPS_3D', 'Flat A*', 'No-Stitch', 'Grid-HPA*']
+    for method in method_order:
+        if method not in METHOD_STYLE:
+            continue
         mrows = [r for r in rows if r['method'] == method]
+        if not mrows:
+            continue
+        label, color, ls, lw, zo = METHOD_STYLE[method]
         x = [sf(r['overhead_pct']) for r in mrows]
         y = [sf(r['cdf']) * 100 for r in mrows]
-        label = f'TG {method}'
-        color = COLORS.get(label, '#333')
-        ax.plot(x, y, color=color, linewidth=1.8, label=label)
+        ax.plot(x, y, color=color, linestyle=ls, linewidth=lw,
+                label=label, zorder=zo)
+
+    # Reference lines
+    ax.axvline(x=0,  color='gray', linestyle=':', alpha=0.45, linewidth=0.8)
+    ax.axhline(y=50, color='gray', linestyle='--', alpha=0.25, linewidth=0.8)
+    ax.axhline(y=95, color='gray', linestyle='--', alpha=0.25, linewidth=0.8)
+    ax.text(X_MAX - 0.5, 51, '50%', color='gray', fontsize=ANNOT_SIZE, va='bottom', ha='right', alpha=0.7)
+    ax.text(X_MAX - 0.5, 96, '95%', color='gray', fontsize=ANNOT_SIZE, va='bottom', ha='right', alpha=0.7)
+
+    # Median annotations for TG K=1 and K=5 — place above each other to avoid overlap
+    MEDIAN_ANNOT = [
+        ('K=5',  2.89,  COLORS['TG K=5'],  72),   # (method_key, med_x, color, text_y)
+        ('K=1',  5.03,  COLORS['TG K=1'],  56),
+    ]
+    for _key, med_x, col, ty in MEDIAN_ANNOT:
+        ax.axvline(x=med_x, color=col, linestyle='--', alpha=0.6, linewidth=1.0, zorder=2)
+        label_name = 'TG K=5' if _key == 'K=5' else 'TG K=1'
+        ax.annotate(
+            f'{label_name}\n{med_x:+.1f}%',
+            xy=(med_x, 50), xycoords='data',
+            xytext=(med_x + 1.2, ty), textcoords='data',
+            fontsize=ANNOT_SIZE, color=col, va='center', ha='left',
+            arrowprops=dict(arrowstyle='->', color=col, lw=0.8),
+            bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.85, ec='none'),
+            zorder=8,
+        )
 
     ax.set_xlabel('Path Overhead vs ALT (%)')
     ax.set_ylabel('CDF (%)')
-    ax.set_title('Overhead CDF (HM3D 100, 0.1m)')
-    ax.axvline(x=0, color='gray', linestyle=':', alpha=0.5, linewidth=0.8)
-    ax.axhline(y=50, color='gray', linestyle='--', alpha=0.3, linewidth=0.8)
-    ax.axhline(y=95, color='gray', linestyle='--', alpha=0.3, linewidth=0.8)
-    ax.legend(loc='lower right')
-    ax.set_xlim(-30, 60)
+    ax.set_title('Path Overhead CDF (HM3D 100 scenes, 0.1 m)')
+    ax.set_xlim(X_MIN, X_MAX)
     ax.set_ylim(0, 100)
 
+    # Legend outside axes (right side) to avoid blocking curves
+    ax.legend(loc='center left', bbox_to_anchor=(1.02, 0.5),
+              framealpha=0.9, borderaxespad=0.0)
+
+    fig.tight_layout()
     path = out_dir / 'overhead_cdf_hm3d_01m.pdf'
-    fig.savefig(path)
+    save_figure(fig, path, 'overhead_cdf.pdf')
     plt.close(fig)
-    print(f"  Written: {path}")
 
 
 def plot_speedup_scatter(analysis_dir, out_dir):
@@ -193,12 +295,11 @@ def plot_speedup_scatter(analysis_dir, out_dir):
     ax.set_xlabel('Mean Query Geodesic Distance (m)')
     ax.set_ylabel('Speedup vs ALT')
     ax.set_title('Speedup vs Query Distance (HM3D, K=5)')
-    ax.legend(loc='upper right', fontsize=8)
+    ax.legend(loc='upper right')
 
     path = out_dir / 'speedup_vs_geodesic.pdf'
-    fig.savefig(path)
+    save_figure(fig, path, 'speedup_vs_geodesic.pdf')
     plt.close(fig)
-    print(f"  Written: {path}")
 
     # 2. Speedup vs TG nodes
     fig, ax = plt.subplots()
@@ -211,9 +312,8 @@ def plot_speedup_scatter(analysis_dir, out_dir):
     ax.set_title('Speedup vs Graph Complexity (HM3D, K=5)')
 
     path = out_dir / 'speedup_vs_tg_nodes.pdf'
-    fig.savefig(path)
+    save_figure(fig, path, 'speedup_vs_tg_nodes.pdf')
     plt.close(fig)
-    print(f"  Written: {path}")
 
 
 def plot_amortization(analysis_dir, out_dir):
@@ -242,9 +342,9 @@ def plot_amortization(analysis_dir, out_dir):
         ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
 
         path = out_dir / f'amortization_{dataset}_01m.pdf'
-        fig.savefig(path)
+        paper_name = 'amortization.pdf' if dataset == 'hm3d' else f'amortization_{dataset}.pdf'
+        save_figure(fig, path, paper_name)
         plt.close(fig)
-        print(f"  Written: {path}")
 
 
 def plot_tau_sensitivity(data_dir, out_dir):
@@ -273,10 +373,10 @@ def plot_tau_sensitivity(data_dir, out_dir):
         ax1.axhline(y=sf(auto[0].get('med_query_ms', auto[0]['mean_query_ms'])), color='red', linestyle='--',
                      linewidth=1.2, label='Auto-tau')
     ax1.set_xlabel('Persistence Threshold (tau)')
-    ax1.set_ylabel('Median Query Time (ms)')
+    ax1.set_ylabel('Query Time (ms)')
     ax1.set_xticks(x)
     ax1.set_xticklabels(taus)
-    ax1.legend(fontsize=8)
+    ax1.legend()
     ax1.set_title('Query Time vs tau')
 
     bars2 = ax2.bar(x, oh_mean, color=COLORS['TG K=5'], alpha=0.8, label='Fixed tau')
@@ -288,16 +388,15 @@ def plot_tau_sensitivity(data_dir, out_dir):
     ax2.set_xticks(x)
     ax2.set_xticklabels(taus)
     ax2.axhline(y=0, color='gray', linestyle=':', alpha=0.5)
-    ax2.legend(fontsize=8)
+    ax2.legend()
     ax2.set_title('Overhead vs tau')
 
-    fig.suptitle('Tau Sensitivity (HM3D 100, K=5, 0.1m)', fontsize=12)
+    fig.suptitle('Tau Sensitivity (HM3D 100, K=5, 0.1m)', fontsize=FONT_SIZE)
     fig.tight_layout()
 
     path = out_dir / 'tau_sensitivity_hm3d_01m.pdf'
-    fig.savefig(path)
+    save_figure(fig, path, 'tau_sensitivity.pdf')
     plt.close(fig)
-    print(f"  Written: {path}")
 
 
 def plot_resolution_scaling(data_dir, out_dir):
@@ -307,7 +406,10 @@ def plot_resolution_scaling(data_dir, out_dir):
         print("  [SKIP] resolution scaling: insufficient data (need cross-res results)")
         return
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 3.5))
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, figsize=(3.5, 5.0),
+        gridspec_kw={'hspace': 0.42},
+    )
 
     res = [sf(r['resolution']) for r in rows]
     res_labels = [f"{r['resolution']}m" for r in rows]
@@ -315,7 +417,7 @@ def plot_resolution_scaling(data_dir, out_dir):
     alt_ts = [sf(r.get('alt_ts_med', r['alt_ts_mean'])) for r in rows]
     tg_ts = [sf(r.get('tg_ts_med', r['tg_ts_mean'])) for r in rows]
     speedup = [sf(r.get('speedup_med', r.get('speedup', 0))) for r in rows]
-    oh = [sf(r['oh_mean']) for r in rows]
+    oh = [sf(r.get('oh_med', r['oh_mean'])) for r in rows]
 
     x = range(len(res))
     w = 0.35
@@ -325,29 +427,35 @@ def plot_resolution_scaling(data_dir, out_dir):
     ax1.set_ylabel('Median Query Time (ms)')
     ax1.set_xticks(x)
     ax1.set_xticklabels(res_labels)
-    ax1.legend(fontsize=8)
-    ax1.set_title('Query Time')
+    ax1.legend(loc='upper left')
+    ax1.set_title('(a) Median Query Time')
 
     ax2.bar([i - w/2 for i in x], speedup, w, color=COLORS['TG K=5'], alpha=0.8, label='Speedup (median)')
     ax2b = ax2.twinx()
-    ax2b.plot(x, oh, color='red', marker='s', linewidth=1.5, markersize=5, label='Overhead %')
+    ax2b.plot(x, oh, color='#D32F2F', marker='o', linewidth=1.5, markersize=4, label='Median overhead (%)')
     ax2.set_xlabel('Resolution')
     ax2.set_ylabel('Speedup vs ALT')
-    ax2b.set_ylabel('Mean Overhead (%)', color='red')
+    ax2b.set_ylabel('')
+    ax2b.tick_params(axis='y', colors='#D32F2F')
     ax2.set_xticks(x)
     ax2.set_xticklabels(res_labels)
-    ax2.set_title('Speedup & Overhead')
+    ax2.set_title('(b) Speedup and Overhead')
     lines1, labels1 = ax2.get_legend_handles_labels()
     lines2, labels2 = ax2b.get_legend_handles_labels()
-    ax2.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left')
+    ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
 
-    fig.suptitle('Resolution Scaling (HM3D 100, K=5)', fontsize=12)
-    fig.tight_layout()
+    for ax in (ax1, ax2):
+        ax.grid(axis='y', alpha=0.3)
+        ax.grid(axis='x', visible=False)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+    ax2b.spines['top'].set_visible(False)
+    ax2b.spines['right'].set_color('#D32F2F')
+    fig.align_ylabels([ax1, ax2])
 
     path = out_dir / 'resolution_scaling_hm3d.pdf'
-    fig.savefig(path)
+    save_figure(fig, path, 'resolution_scaling.pdf')
     plt.close(fig)
-    print(f"  Written: {path}")
 
 
 def plot_timing_breakdown(results_dir, out_dir):
@@ -408,19 +516,18 @@ def plot_timing_breakdown(results_dir, out_dir):
     ax.bar(x[2], alt_total, 0.7, color=COLORS['ALT'], label='ALT (total)', alpha=0.85)
 
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=8)
+    ax.set_xticklabels(labels, fontsize=ANNOT_SIZE)
     ax.set_ylabel('Median Query Time (ms)')
     ax.set_title('Query Time Breakdown (HM3D 100, 0.1m)')
-    ax.legend(fontsize=8, loc='upper right')
+    ax.legend(loc='upper right')
 
     # Annotate totals
     for xi, total in zip(x, [n_total, a_total, alt_total]):
-        ax.text(xi, total + 0.003, f'{total:.3f}', ha='center', va='bottom', fontsize=8)
+        ax.text(xi, total + 0.003, f'{total:.3f}', ha='center', va='bottom', fontsize=ANNOT_SIZE)
 
     path = out_dir / 'timing_breakdown_hm3d_01m.pdf'
-    fig.savefig(path)
+    save_figure(fig, path, 'timing_breakdown.pdf')
     plt.close(fig)
-    print(f"  Written: {path}")
 
 
 def plot_speedup_histogram(results_dir, out_dir):
@@ -466,17 +573,16 @@ def plot_speedup_histogram(results_dir, out_dir):
     ax.set_xlabel('Per-Scene Median Speedup (TG K=5 vs ALT)')
     ax.set_ylabel('Number of Scenes')
     ax.set_title(f'Speedup Distribution (HM3D, n={len(speedups)} scenes)')
-    ax.legend(fontsize=8)
+    ax.legend()
 
     faster = sum(1 for s in speedups if s > 1)
     ax.text(0.98, 0.95, f'TG faster: {faster}/{len(speedups)} ({100*faster/len(speedups):.0f}%)',
-            transform=ax.transAxes, ha='right', va='top', fontsize=8,
+            transform=ax.transAxes, ha='right', va='top', fontsize=ANNOT_SIZE,
             bbox=dict(boxstyle='round,pad=0.3', facecolor='wheat', alpha=0.8))
 
     path = out_dir / 'speedup_histogram_hm3d_01m.pdf'
-    fig.savefig(path)
+    save_figure(fig, path, 'speedup_histogram.pdf')
     plt.close(fig)
-    print(f"  Written: {path}")
 
 
 def main():

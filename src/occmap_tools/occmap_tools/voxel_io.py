@@ -77,9 +77,19 @@ def find_npy_for_scan(obj_path: str, resolution: float,
 
 
 def _scan_id_from_obj_path(obj_path: str) -> Optional[str]:
-    """Extract scan_id from .../scans/{scan_id}/..."""
-    parts = Path(obj_path).parts
-    for i, p in enumerate(parts):
-        if p == 'scans' and i + 1 < len(parts):
+    """Extract scan_id from OBJ path.
+
+    Supports:
+      - MP3D: .../scans/{scan_id}/...
+      - HM3D: .../obj_scenes/{scan_id}.obj  (or any .obj where stem is scan_id)
+    """
+    p = Path(obj_path)
+    parts = p.parts
+    # MP3D convention: .../scans/{scan_id}/...
+    for i, part in enumerate(parts):
+        if part == 'scans' and i + 1 < len(parts):
             return parts[i + 1]
+    # HM3D / generic: use filename stem
+    if p.suffix.lower() == '.obj':
+        return p.stem
     return None

@@ -372,41 +372,44 @@ std::tuple<int, int, int> VoxelMap::findNearestValidSurface(
         return {-1, -1, -1};
     }
 
-    int min_dist_sq = search_radius * search_radius + 1;  // 初始化为超出搜索范围
+    int best_dist_sq = search_radius * search_radius + 1;
     std::tuple<int, int, int> best = {-1, -1, -1};
 
-    // 在搜索半径内遍历所有体素
-    for (int dx = -search_radius; dx <= search_radius; ++dx) {
-        // 每完成一层dx循环，检查一次取消标志（避免每个体素都检查影响性能）
+    // Expanding-shell search: iterate outward so we can stop early.
+    // Once we find a surface voxel at distance d, we only need to check
+    // shells up to d (not the full search_radius cube).
+    for (int shell = 0; shell <= search_radius; ++shell) {
+        // If we already found a surface voxel closer than this shell, stop
+        if (shell * shell >= best_dist_sq) break;
+
         if (should_cancel && should_cancel()) {
-            return {-1, -1, -1};  // 被取消，返回无效值
+            return {-1, -1, -1};
         }
 
-        for (int dy = -search_radius; dy <= search_radius; ++dy) {
-            // Z方向也搜索一定范围（允许高度变化）
-            for (int dz = -search_radius; dz <= search_radius; ++dz) {
-                int nx_coord = ix + dx;
-                int ny_coord = iy + dy;
-                int nz_coord = iz + dz;
+        // Scan the surface of the cube at this shell radius.
+        // For shell==0, just check the center point.
+        // For shell>0, check all points with max(|dx|,|dy|,|dz|)==shell.
+        for (int dx = -shell; dx <= shell; ++dx) {
+            for (int dy = -shell; dy <= shell; ++dy) {
+                for (int dz = -shell; dz <= shell; ++dz) {
+                    // Only check the surface of the shell cube (skip interior)
+                    if (std::abs(dx) != shell && std::abs(dy) != shell &&
+                        std::abs(dz) != shell)
+                        continue;
 
-                // 检查索引有效性
-                if (!isValidIdx(nx_coord, ny_coord, nz_coord)) {
-                    continue;
-                }
+                    int dist_sq = dx*dx + dy*dy + dz*dz;
+                    if (dist_sq >= best_dist_sq) continue;
 
-                // 使用直接索引检查是否是有效Surface（O(1)）
-                size_t idx = index3DTo1D(nx_coord, ny_coord, nz_coord);
-                if (idx >= surface_array_.size() || !surface_array_[idx]) {
-                    continue;
-                }
+                    int nx = ix + dx, ny = iy + dy, nz = iz + dz;
+                    if (!isValidIdx(nx, ny, nz)) continue;
 
-                // 计算距离平方（避免开方）
-                int dist_sq = dx*dx + dy*dy + dz*dz;
+                    size_t idx = index3DTo1D(nx, ny, nz);
+                    if (idx >= surface_array_.size() || !surface_array_[idx])
+                        continue;
 
-                // 更新最近点
-                if (dist_sq <= search_radius * search_radius && dist_sq < min_dist_sq) {
-                    min_dist_sq = dist_sq;
-                    best = {nx_coord, ny_coord, nz_coord};
+                    best_dist_sq = dist_sq;
+                    best = {nx, ny, nz};
+                    if (dist_sq == 0) return best;  // exact match
                 }
             }
         }

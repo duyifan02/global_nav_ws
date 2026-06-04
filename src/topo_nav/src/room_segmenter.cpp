@@ -210,6 +210,10 @@ RoomGraph segmentRooms(
     int len = 0;
     std::vector<BndVoxel> side_i;  // boundary voxels on room_i side
     std::vector<BndVoxel> side_j;  // boundary voxels on room_j side
+    // Guaranteed-adjacent pairs: (surf_i, surf_j) — both are 26-adjacent surface-graph neighbors.
+    // Used for multi-portal selection to guarantee portal pairs never need bridging.
+    std::vector<std::pair<int,int>> adj_pairs;
+    int primary_pair_j = -1;  // guaranteed-adjacent partner of argmax_surf_i (K=1 use)
   };
 
   // Use a flat map: key = i * R + j (i < j)
@@ -237,8 +241,14 @@ RoomGraph segmentRooms(
 
       if (ri < rj) {
         b.min_d_i = std::min(b.min_d_i, ds);
-        if (ds > b.max_d_i) { b.max_d_i = ds; b.argmax_surf_i = s; }
-        if (K > 1) b.side_i.push_back({s, ds});
+        if (ds > b.max_d_i) {
+          b.max_d_i = ds; b.argmax_surf_i = s;
+          b.primary_pair_j = q;  // q is a guaranteed 26-adjacent partner in room_j
+        }
+        if (K > 1) {
+          b.side_i.push_back({s, ds});
+          b.adj_pairs.push_back({s, q});
+        }
       } else {
         b.min_d_j = std::min(b.min_d_j, ds);
         if (ds > b.max_d_j) { b.max_d_j = ds; b.argmax_surf_j = s; }
@@ -332,13 +342,70 @@ RoomGraph segmentRooms(
     edge.trans_wz         = 0.5f * (static_cast<float>(wzi) + static_cast<float>(wzj));
     edge.boundary_length  = b.len / 2;
 
-    // Multi-portal selection
-    if (K > 1) {
+    // Multi-portal selection: use paired (si, sj) that are guaranteed 26-adjacent.
+    // This eliminates the need for bridgeGap to handle non-adjacent portal pairs.
+    if (K > 1 && !b.adj_pairs.empty()) {
+      // Deduplicate adj_pairs
+      std::sort(b.adj_pairs.begin(), b.adj_pairs.end());
+      b.adj_pairs.erase(std::unique(b.adj_pairs.begin(), b.adj_pairs.end()), b.adj_pairs.end());
+
+      if (static_cast<int>(b.adj_pairs.size()) <= K) {
+        // Use all pairs; put seed pair first
+        int seed_pos = 0;
+        for (int p = 0; p < (int)b.adj_pairs.size(); ++p) {
+          if (b.adj_pairs[p].first == si) { seed_pos = p; break; }
+        }
+        edge.transitions_i.push_back(b.adj_pairs[seed_pos].first);
+        edge.transitions_j.push_back(b.adj_pairs[seed_pos].second);
+        for (int p = 0; p < (int)b.adj_pairs.size(); ++p) {
+          if (p != seed_pos) {
+            edge.transitions_i.push_back(b.adj_pairs[p].first);
+            edge.transitions_j.push_back(b.adj_pairs[p].second);
+          }
+        }
+      } else {
+        // Farthest-point sampling on pair midpoints
+        auto cx = [&](int idx) { return 0.5f * (graph[b.adj_pairs[idx].first].x + graph[b.adj_pairs[idx].second].x); };
+        auto cy = [&](int idx) { return 0.5f * (graph[b.adj_pairs[idx].first].y + graph[b.adj_pairs[idx].second].y); };
+        auto cz = [&](int idx) { return 0.5f * (graph[b.adj_pairs[idx].first].z + graph[b.adj_pairs[idx].second].z); };
+
+        // Find seed pair index (pair whose .first == si)
+        int seed_pair = 0;
+        for (int p = 0; p < (int)b.adj_pairs.size(); ++p) {
+          if (b.adj_pairs[p].first == si) { seed_pair = p; break; }
+        }
+
+        std::vector<int> sel = {seed_pair};
+        std::vector<float> min_d2(b.adj_pairs.size(), std::numeric_limits<float>::max());
+
+        for (int k = 1; k < K; ++k) {
+          const int last = sel.back();
+          for (size_t p = 0; p < b.adj_pairs.size(); ++p) {
+            float dx = cx(p) - cx(last), dy = cy(p) - cy(last), dz = cz(p) - cz(last);
+            min_d2[p] = std::min(min_d2[p], dx*dx + dy*dy + dz*dz);
+          }
+          int best = -1; float best_d = -1.f;
+          for (size_t p = 0; p < b.adj_pairs.size(); ++p) {
+            bool already = false;
+            for (int s : sel) if ((int)p == s) { already = true; break; }
+            if (!already && min_d2[p] > best_d) { best_d = min_d2[p]; best = (int)p; }
+          }
+          if (best >= 0) sel.push_back(best);
+        }
+        for (int idx : sel) {
+          edge.transitions_i.push_back(b.adj_pairs[idx].first);
+          edge.transitions_j.push_back(b.adj_pairs[idx].second);
+        }
+      }
+    } else if (K > 1) {
+      // No adj_pairs recorded (shouldn't happen with valid boundaries); fall back
       edge.transitions_i = selectPortals(b.side_i, si);
       edge.transitions_j = selectPortals(b.side_j, sj);
     } else {
+      // K=1: use argmax_surf_i paired with its guaranteed-adjacent partner
       edge.transitions_i = {si};
-      edge.transitions_j = {sj};
+      const int paired_j = (b.primary_pair_j >= 0) ? b.primary_pair_j : sj;
+      edge.transitions_j = {paired_j};
     }
 
     const int eidx = static_cast<int>(rg.edges.size());

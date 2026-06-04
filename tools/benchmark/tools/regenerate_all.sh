@@ -17,11 +17,14 @@ log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
 mkdir -p "$ANALYSIS" "$FIGURES" "$FIGURES/data"
 
-# Helper: pick v2 file if it exists, otherwise fall back to original
+# Helper: pick best available version (v3 > v2 > original)
 pick() {
     local base="$1"
+    local v3="${base%.csv}_v3.csv"
     local v2="${base%.csv}_v2.csv"
-    if [ -f "$v2" ]; then echo "$v2"; else echo "$base"; fi
+    if [ -f "$v3" ]; then echo "$v3"
+    elif [ -f "$v2" ]; then echo "$v2"
+    else echo "$base"; fi
 }
 
 ALT_HM3D=$(pick "$HM3D/100_alt_01m_500q.csv")
@@ -72,7 +75,7 @@ fi
 log "=== 4/6: Tau oracle ==="
 TAU_FILES=""
 for tau in 3 4 5 6; do
-    f="$HM3D/100_tg_tau${tau}_k5_01m_500q.csv"
+    f=$(pick "$HM3D/100_tg_tau${tau}_k5_01m_500q.csv")
     if [ -f "$f" ]; then TAU_FILES="$TAU_FILES $f"; fi
 done
 if [ -n "$TAU_FILES" ]; then

@@ -1,5 +1,5 @@
 bad_case_type,count,fraction
-acceptable,91,0.7109
-portal_placement,21,0.1641
-unknown,13,0.1016
-same_room_detour,3,0.0234
+acceptable,332,0.7667
+portal_placement,42,0.0970
+long_route_overhead,35,0.0808
+unknown,24,0.0554
