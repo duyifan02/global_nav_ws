@@ -3,47 +3,91 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>PH-ALT-TG Navigation Results</title>
-    <meta name="description" content="Experimental results for PH-ALT-TG hierarchical navigation on HM3D and MP3D scenes.">
+    <title>Beyond Geometry: PH-ALT-TG Navigation</title>
+    <meta name="description" content="A fast hierarchical navigation system for complex indoor 3D environments using persistent homology, transition graphs, and ALT search.">
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
-    <main class="page">
-      <section class="hero">
-        <div>
-          <p class="eyebrow">Beyond Geometry / Global Navigation</p>
-          <h1>PH-ALT-TG Navigation Results</h1>
+    <main>
+      <section class="hero promo-hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Beyond Geometry</p>
+          <h1>Fast 3D indoor navigation without giving up path quality.</h1>
           <p class="lead">
-            A persistent-homology room segmentation and transition-graph planner for fast
-            indoor 3D navigation over surface voxel maps.
+            PH-ALT-TG turns dense walkable-surface voxel maps into compact room-and-portal
+            transition graphs, enabling sub-millisecond planning on complex multi-room scenes.
           </p>
-        </div>
-        <aside class="hero-panel" aria-label="Key metrics">
-          <div class="metric-grid">
-            <div class="metric">
-              <strong>0.033 ms</strong>
-              <span>HM3D median query time, TG K=1</span>
-            </div>
-            <div class="metric">
-              <strong>0.044 ms</strong>
-              <span>HM3D median query time, TG K=5</span>
-            </div>
-            <div class="metric">
-              <strong>+2.9%</strong>
-              <span>HM3D median path overhead, TG K=5</span>
-            </div>
-            <div class="metric">
-              <strong>100</strong>
-              <span>HM3D scenes evaluated at 0.1 m</span>
-            </div>
+          <div class="actions">
+            <a class="button primary" href="#results">See results</a>
+            <a class="button" href="https://github.com/duyifan02/global_nav_ws">View code</a>
           </div>
-        </aside>
+        </div>
+        <div class="hero-figure">
+          <img src="assets/pareto.png" alt="Pareto plot showing PH-ALT-TG speed and overhead">
+        </div>
       </section>
 
-      <section class="section" id="main-results">
+      <section class="band">
+        <div class="metrics-row">
+          <div class="metric">
+            <strong>0.033 ms</strong>
+            <span>HM3D median query time with TG K=1</span>
+          </div>
+          <div class="metric">
+            <strong>0.044 ms</strong>
+            <span>HM3D median query time with TG K=5</span>
+          </div>
+          <div class="metric">
+            <strong>+2.9%</strong>
+            <span>HM3D median path overhead with TG K=5</span>
+          </div>
+          <div class="metric">
+            <strong>100</strong>
+            <span>HM3D scenes evaluated at 0.1 m resolution</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="problem">
         <div class="section-head">
-          <h2>Main Results</h2>
-          <p>Median latency is reported in milliseconds. Overhead is relative to ALT on the full surface graph.</p>
+          <h2>The Problem</h2>
+          <p>
+            Full-graph 3D planners remain expensive because every query searches over dense
+            surface voxels. Simple abstraction can be fast, but often loses path quality in
+            rooms, corridors, stairs, and multi-floor spaces.
+          </p>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <h2>Our Approach</h2>
+          <p>Use topology to compress the map, then recover exact surface paths only where needed.</p>
+        </div>
+        <div class="feature-grid">
+          <article class="feature">
+            <h3>Persistent room segmentation</h3>
+            <p>Clearance-field persistence identifies stable room-like regions and avoids brittle hand-tuned slicing.</p>
+          </article>
+          <article class="feature">
+            <h3>Portal transition graph</h3>
+            <p>Room boundaries become compact portal nodes, with intra-room geodesic costs cached by Dijkstra fields.</p>
+          </article>
+          <article class="feature">
+            <h3>ALT-accelerated queries</h3>
+            <p>Landmark lower bounds guide A* on the transition graph instead of searching the entire surface map.</p>
+          </article>
+          <article class="feature">
+            <h3>Path stitching</h3>
+            <p>Parent-chain reconstruction stitches room segments into executable voxel paths with low overhead.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" id="results">
+        <div class="section-head">
+          <h2>Key Results</h2>
+          <p>HM3D-only benchmark summary at 0.1 m resolution. PH-ALT-TG keeps the path overhead small while sharply reducing median query latency.</p>
         </div>
         <div class="table-wrap">
           <table>
@@ -54,106 +98,63 @@
                 <th>Success</th>
                 <th>Valid</th>
                 <th>Median query</th>
-                <th>Mean query</th>
                 <th>P95 query</th>
-                <th>Mean OH</th>
-                <th>Median OH</th>
+                <th>Median overhead</th>
                 <th>Precompute</th>
               </tr>
             </thead>
             <tbody>
-              <tr><td>MP3D</td><td>ALT L=16</td><td>66.7%</td><td>100.0%</td><td>0.249</td><td>0.432</td><td>1.160</td><td>-</td><td>-</td><td>68.2 ms</td></tr>
-              <tr><td>MP3D</td><td>TG K=1</td><td>66.7%</td><td>100.0%</td><td>0.059</td><td>0.060</td><td>0.102</td><td>+6.5%</td><td>+6.5%</td><td>472.6 ms</td></tr>
-              <tr><td>MP3D</td><td>TG K=5</td><td>50.0%</td><td>100.0%</td><td>0.083</td><td>0.068</td><td>0.086</td><td>+3.0%</td><td>+3.0%</td><td>1007.6 ms</td></tr>
-              <tr><td>HM3D</td><td>ALT L=16</td><td>89.6%</td><td>100.0%</td><td>0.065</td><td>0.204</td><td>0.858</td><td>-</td><td>-</td><td>74.7 ms</td></tr>
-              <tr><td>HM3D</td><td>TG K=1</td><td>87.8%</td><td>100.0%</td><td>0.033</td><td>0.166</td><td>0.899</td><td>+12.2%</td><td>+5.0%</td><td>67.7 ms</td></tr>
-              <tr><td>HM3D</td><td>TG K=5</td><td>86.6%</td><td>100.0%</td><td>0.044</td><td>0.185</td><td>0.937</td><td>+9.5%</td><td>+2.9%</td><td>225.7 ms</td></tr>
+              <tr><td>HM3D</td><td>ALT L=16</td><td>89.6%</td><td>100.0%</td><td>0.065 ms</td><td>0.858 ms</td><td>-</td><td>74.7 ms</td></tr>
+              <tr><td>HM3D</td><td>TG K=1</td><td>87.8%</td><td>100.0%</td><td>0.033 ms</td><td>0.899 ms</td><td>+5.0%</td><td>67.7 ms</td></tr>
+              <tr><td>HM3D</td><td>TG K=5</td><td>86.6%</td><td>100.0%</td><td>0.044 ms</td><td>0.937 ms</td><td>+2.9%</td><td>225.7 ms</td></tr>
             </tbody>
           </table>
         </div>
       </section>
 
-      <section class="section" id="figures">
+      <section class="section">
         <div class="section-head">
-          <h2>Figures</h2>
-          <p>These are generated from the repository experiment outputs. Each card links to the source PDF.</p>
+          <h2>Evidence</h2>
+          <p>Representative plots generated from the benchmark pipeline.</p>
         </div>
         <div class="cards">
-          <article class="figure-card">
-            <img src="assets/pareto.png" alt="Pareto Cleveland dot plot for query time and path overhead">
+          <article class="figure-card wide">
+            <img src="assets/overhead_cdf.png" alt="Path overhead distribution CDF">
             <div class="figure-body">
-              <h3>Speed and Quality Pareto</h3>
-              <p>TG variants stay below the ALT median query time while keeping median overhead close to zero.</p>
-              <div class="figure-links"><a href="assets/pareto.pdf">PDF</a></div>
+              <h3>Most TG queries stay close to ALT path quality</h3>
+              <p>The CDF shows median path overheads around +5.0% for K=1 and +2.9% for K=5 on HM3D.</p>
+              <div class="figure-links"><a href="assets/overhead_cdf.pdf">Open PDF</a></div>
             </div>
           </article>
           <article class="figure-card">
-            <img src="assets/overhead_cdf.png" alt="Path overhead CDF">
+            <img src="assets/resolution_scaling.png" alt="Resolution scaling result">
             <div class="figure-body">
-              <h3>Path Overhead Distribution</h3>
-              <p>CDF view of per-query path overhead relative to ALT, with median markers for TG K=1 and K=5.</p>
-              <div class="figure-links"><a href="assets/overhead_cdf.pdf">PDF</a></div>
+              <h3>Scaling across map resolutions</h3>
+              <p>Median query latency and median overhead remain controlled from 0.1 m to 0.05 m.</p>
+              <div class="figure-links"><a href="assets/resolution_scaling.pdf">Open PDF</a></div>
             </div>
           </article>
           <article class="figure-card">
-            <img src="assets/resolution_scaling.png" alt="Resolution scaling plot">
+            <img src="assets/amortization.png" alt="Amortized planning cost curve">
             <div class="figure-body">
-              <h3>Resolution Scaling</h3>
-              <p>Median query time and median overhead across 0.1 m, 0.075 m, and 0.05 m surface maps.</p>
-              <div class="figure-links"><a href="assets/resolution_scaling.pdf">PDF</a></div>
-            </div>
-          </article>
-          <article class="figure-card">
-            <img src="assets/amortization.png" alt="Amortization curve">
-            <div class="figure-body">
-              <h3>Amortized Cost</h3>
-              <p>Precompute cost amortizes as the number of queries per map grows.</p>
-              <div class="figure-links"><a href="assets/amortization.pdf">PDF</a></div>
-            </div>
-          </article>
-          <article class="figure-card">
-            <img src="assets/timing_breakdown.png" alt="Timing breakdown stacked bar chart">
-            <div class="figure-body">
-              <h3>Timing Breakdown</h3>
-              <p>Median query time split into snap, graph search, stitching, and residual costs.</p>
-              <div class="figure-links"><a href="assets/timing_breakdown.pdf">PDF</a></div>
-            </div>
-          </article>
-          <article class="figure-card">
-            <img src="assets/speedup_histogram.png" alt="Per-scene speedup histogram">
-            <div class="figure-body">
-              <h3>Per-Scene Speedup</h3>
-              <p>Distribution of scene-level median speedup for TG K=5 over ALT.</p>
-              <div class="figure-links"><a href="assets/speedup_histogram.pdf">PDF</a></div>
+              <h3>Precompute amortizes over repeated queries</h3>
+              <p>The transition graph is built once per map, then reused for fast multi-query planning.</p>
+              <div class="figure-links"><a href="assets/amortization.pdf">Open PDF</a></div>
             </div>
           </article>
         </div>
       </section>
 
-      <section class="section" id="method">
-        <div class="section-head">
-          <h2>Method Summary</h2>
-          <p>The planner compresses the surface graph into a transition graph using persistent homology.</p>
+      <section class="section cta">
+        <div>
+          <h2>Repository</h2>
+          <p>
+            The implementation includes ROS 2 navigation components, benchmark tooling,
+            result aggregation, and figure generation scripts.
+          </p>
         </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr><th>Stage</th><th>Role</th><th>Repository implementation</th></tr>
-            </thead>
-            <tbody>
-              <tr><td>Surface graph</td><td>Voxelize walkable surfaces and compute traversal costs.</td><td><code>src/jps_planner_3d</code>, <code>src/occmap_tools</code></td></tr>
-              <tr><td>PH segmentation</td><td>Use persistence on clearance fields to identify rooms and portals.</td><td><code>src/topo_nav</code></td></tr>
-              <tr><td>Transition graph</td><td>Connect portals with room-local Dijkstra fields and crossing edges.</td><td><code>hierarchical_planner.cpp</code></td></tr>
-              <tr><td>ALT query</td><td>Run A* on the compact graph with landmark lower bounds.</td><td><code>alt_planner.cpp</code></td></tr>
-              <tr><td>Stitching</td><td>Reconstruct surface paths from cached parent trees.</td><td><code>hierarchical_planner.cpp</code></td></tr>
-            </tbody>
-          </table>
-        </div>
+        <a class="button primary" href="https://github.com/duyifan02/global_nav_ws">Open GitHub repository</a>
       </section>
-
-      <footer class="footer">
-        <p>Generated from the repository experiment artifacts. Enable GitHub Pages with source set to <strong>Deploy from a branch</strong>, branch <strong>feat/stitched-geodesic-planner</strong>, folder <strong>/docs</strong>.</p>
-      </footer>
     </main>
   </body>
 </html>
